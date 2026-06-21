@@ -21,11 +21,10 @@ import { AttachmentChips } from '@/components/AttachmentChips';
 import { MissingApiKeyDialog } from '@/components/MissingApiKeyDialog';
 import { cn } from '@/lib/utils';
 import { prepareUploadImage } from '@/lib/upload-image-cache';
-import { getApiKeyFromStorage } from '@/lib/settings-storage';
 import { streamReversePrompt, type StreamReverseHandle } from '@/lib/reverse-prompt-client';
 import {
   DEFAULT_REVERSE_MODE,
-  DEFAULT_REVERSE_MODEL,
+  getDefaultReversePromptModelId,
   REVERSE_PROMPT_MODE_OPTIONS,
   getReversePromptModelOptionsList,
   getReverseModelOption,
@@ -35,6 +34,7 @@ import {
   type ReversePromptMode,
   type ReversePromptModelId,
 } from '@/lib/reverse-prompt-config';
+import { getConfiguredTextModel } from '@/lib/model-endpoints';
 import {
   clearReverseDraft,
   loadReverseResults,
@@ -83,7 +83,7 @@ interface ReversePromptFormProps {
 }
 
 export function ReversePromptForm({ wideMode = false, disabled = false, onConfigureApiKey }: ReversePromptFormProps) {
-  const [model, setModel] = useState<ReversePromptModelId>(DEFAULT_REVERSE_MODEL);
+  const [model, setModel] = useState<ReversePromptModelId>(getDefaultReversePromptModelId());
   const [mode, setMode] = useState<ReversePromptMode>(DEFAULT_REVERSE_MODE);
   const [settingsReady, setSettingsReady] = useState(false);
 
@@ -114,13 +114,16 @@ export function ReversePromptForm({ wideMode = false, disabled = false, onConfig
       if (cancelled) return;
 
       const saved = loadJsonFromStorage<ReverseSettings>(REVERSE_SETTINGS_KEY);
-    if (saved.model && isReversePromptModel(saved.model)) {
-      setModel(saved.model);
-    }
-    if (saved.mode && isReversePromptMode(saved.mode)) {
-      setMode(saved.mode);
-    }
-    setSettingsReady(true);
+      const fallbackModel = getDefaultReversePromptModelId();
+      if (saved.model && isReversePromptModel(saved.model) && getConfiguredTextModel(saved.model)) {
+        setModel(saved.model);
+      } else if (fallbackModel) {
+        setModel(fallbackModel);
+      }
+      if (saved.mode && isReversePromptMode(saved.mode)) {
+        setMode(saved.mode);
+      }
+      setSettingsReady(true);
 
     // 恢复反推结果
     void loadReverseResults().then((stored) => {
@@ -255,8 +258,8 @@ export function ReversePromptForm({ wideMode = false, disabled = false, onConfig
 
   const handleSubmit = () => {
     if (!pendingFile || streaming || disabled) return;
-    const apiKey = getApiKeyFromStorage();
-    if (!apiKey) {
+    const configuredModel = getConfiguredTextModel(model);
+    if (!configuredModel?.apiKey || !configuredModel.baseUrl || !configuredModel.modelId) {
       setMissingApiKeyDialogOpen(true);
       return;
     }
@@ -284,8 +287,8 @@ export function ReversePromptForm({ wideMode = false, disabled = false, onConfig
 
     const handle = streamReversePrompt(
       {
-        apiKey,
-        model,
+        apiKey: configuredModel.apiKey,
+        model: configuredModel.id,
         mode,
         imageDataUrl: pendingFile.dataUrl,
         mimeType: pendingFile.mimeType,
@@ -333,7 +336,8 @@ export function ReversePromptForm({ wideMode = false, disabled = false, onConfig
           setStreaming(false);
           streamHandleRef.current = null;
         },
-      }
+      },
+      configuredModel.baseUrl
     );
     streamHandleRef.current = handle;
   };

@@ -5,10 +5,6 @@
 
 // ===== 外部 URL =====
 
-/** 模型对比功能已移除（开源版不包含 Ccode 专属功能） */
-export const MODEL_COMPARE_URL = '';
-export const MODEL_COMPARE_ORIGIN = '';
-
 /** BA 随机人物图片 */
 export const BA_RANDOM_URL = 'https://img.catcdn.cn/ba/';
 

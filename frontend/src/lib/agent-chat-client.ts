@@ -11,6 +11,7 @@ import {
   type AgentProposal,
   type AgentActionType,
 } from '@/lib/agent-chat-config';
+import { buildResponsesApiUrl } from '@/lib/model-endpoints';
 import {
   normalizeGptImageBackground,
   normalizeGptImageQuality,
@@ -37,6 +38,7 @@ export interface AgentCatalogEntry {
 
 export interface StreamAgentInput {
   apiKey: string;
+  model: string;
   /** 历史消息（不含本轮，需按时间正序传入） */
   history: AgentMessage[];
   /** 当前可用图片目录 */
@@ -210,7 +212,7 @@ async function runAgentStream(
   signal: AbortSignal,
 ): Promise<void> {
   const body = {
-    model: AGENT_TEXT_MODEL_FALLBACK,
+    model: input.model || AGENT_TEXT_MODEL_FALLBACK,
     stream: true,
     reasoning: { effort: 'medium' as const, summary: 'detailed' as const },
     instructions: buildInstructions(input.catalog),
@@ -221,7 +223,7 @@ async function runAgentStream(
     input: buildInputMessages(input.history),
   };
 
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+  const response = await fetch(buildResponsesApiUrl(baseUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -348,12 +350,13 @@ async function runAgentStream(
 
 export async function describeImage(
   apiKey: string,
+  model: string,
   imageDataUrl: string,
   signal?: AbortSignal,
   baseUrl: string = '',
 ): Promise<string> {
   return runAgentRequestWithRetry(
-    attemptSignal => requestImageDescription(baseUrl, apiKey, imageDataUrl, attemptSignal),
+    attemptSignal => requestImageDescription(baseUrl, apiKey, model, imageDataUrl, attemptSignal),
     signal,
     AGENT_IMAGE_DESCRIBE_ATTEMPT_TIMEOUT_MS,
   );
@@ -362,11 +365,12 @@ export async function describeImage(
 async function requestImageDescription(
   baseUrl: string,
   apiKey: string,
+  model: string,
   imageDataUrl: string,
   signal: AbortSignal,
 ): Promise<string> {
   const body = {
-    model: AGENT_TEXT_MODEL_FALLBACK,
+    model: model || AGENT_TEXT_MODEL_FALLBACK,
     stream: false,
     reasoning: { effort: 'low' as const },
     input: [
@@ -380,7 +384,7 @@ async function requestImageDescription(
     ],
   };
 
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+  const response = await fetch(buildResponsesApiUrl(baseUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

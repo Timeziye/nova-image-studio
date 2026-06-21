@@ -1,6 +1,6 @@
 'use client';
 
-import { Copy, Download, ImagePlus, Settings, Wand2, X, Columns2, Shuffle, User, Wallpaper, Maximize2, RefreshCw } from 'lucide-react';
+import { Copy, Download, ImagePlus, Maximize2, Settings, Wand2, X, Shuffle, User, Wallpaper, RefreshCw } from 'lucide-react';
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, useId, forwardRef, useImperativeHandle } from 'react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -15,44 +15,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { runImageAction, type ImageActionPayload } from '@/lib/image-actions';
 
-import { BA_RANDOM_URL, BING_WALLPAPER_URL, MODEL_COMPARE_ORIGIN, MODEL_COMPARE_URL } from '@/lib/constants';
+import { BA_RANDOM_URL, BING_WALLPAPER_URL } from '@/lib/constants';
 
 function getDistance(t1: { clientX: number; clientY: number }, t2: { clientX: number; clientY: number }) {
   return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-}
-
-function isImageSourceString(value: unknown): value is string {
-  return typeof value === 'string'
-    && (
-      value.startsWith('data:image/')
-      || value.startsWith('blob:')
-      || /^https?:\/\//i.test(value)
-    );
-}
-
-function isImageBlob(value: unknown): value is Blob {
-  return typeof Blob !== 'undefined' && value instanceof Blob && value.type.startsWith('image/');
-}
-
-function getModelCompareImageData(data: unknown): unknown {
-  if (isImageSourceString(data) || isImageBlob(data)) return data;
-  if (!data || typeof data !== 'object') return data;
-  const record = data as Record<string, unknown>;
-  if (Array.isArray(record.images) && record.images.length > 0) return getModelCompareImageData(record.images[0]);
-  if (record.payload && typeof record.payload === 'object') return getModelCompareImageData(record.payload);
-  return record.imageUrl
-    || record.url
-    || record.src
-    || record.dataUrl
-    || record.blob
-    || record.imageBlob
-    || null;
-}
-
-function getModelCompareText(data: unknown, key: string): string | undefined {
-  if (!data || typeof data !== 'object') return undefined;
-  const value = (data as Record<string, unknown>)[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 /** Lock body scroll while mounted, preserving scroll position. */
@@ -74,7 +40,6 @@ function useBodyScrollLock(active: boolean) {
 }
 
 export interface WorkspaceHeaderRef {
-  openCompare: () => void;
   openRandomImage: (url: string, title: string) => void;
 }
 
@@ -91,7 +56,6 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
   { queueStatus, wideMode, onToggleWideMode, onOpenSettings, onLogoClick, sidebarMode = false },
   ref,
 ) {
-  const [compareOpen, setCompareOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [imageSrc, setImageSrc] = useState('');
   const [imageTitle, setImageTitle] = useState('');
@@ -100,7 +64,7 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
   const [viewerPayload, setViewerPayload] = useState<ImageActionPayload | null>(null);
   const viewerObjectUrlRef = useRef<string | null>(null);
 
-  useBodyScrollLock(compareOpen || viewerOpen);
+  useBodyScrollLock(viewerOpen);
 
   const cleanupViewerObjectUrl = useCallback(() => {
     if (viewerObjectUrlRef.current) {
@@ -110,7 +74,6 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
   }, []);
 
   useImperativeHandle(ref, () => ({
-    openCompare: () => setCompareOpen(true),
     openRandomImage: (url, title) => {
       cleanupViewerObjectUrl();
       setViewerPayload(null);
@@ -159,61 +122,6 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
     setImageApiUrl('');
     setViewerPayload(null);
   }, [cleanupViewerObjectUrl]);
-
-  useEffect(() => {
-    if (!compareOpen) return;
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== MODEL_COMPARE_ORIGIN) return;
-      const imageData = getModelCompareImageData(event.data);
-      if (!isImageSourceString(imageData) && !isImageBlob(imageData)) return;
-
-      cleanupViewerObjectUrl();
-      const title = getModelCompareText(event.data, 'title')
-        || getModelCompareText(event.data, 'model')
-        || '模型对比图片';
-      const prompt = getModelCompareText(event.data, 'prompt');
-      const id = `model-compare-${Date.now()}`;
-      let src = '';
-      let payload: ImageActionPayload;
-
-      if (isImageBlob(imageData)) {
-        src = URL.createObjectURL(imageData);
-        viewerObjectUrlRef.current = src;
-        payload = {
-          id,
-          name: title,
-          blob: imageData,
-          sourceKind: 'model-compare',
-          sourceLabel: '模型对比',
-          sourceRef: id,
-          prompt,
-        };
-      } else {
-        src = imageData;
-        payload = {
-          id,
-          name: title,
-          src: imageData,
-          dataUrl: imageData.startsWith('data:image/') ? imageData : undefined,
-          sourceKind: 'model-compare',
-          sourceLabel: '模型对比',
-          sourceRef: imageData,
-          prompt,
-        };
-      }
-
-      setViewerPayload(payload);
-      setImageApiUrl('');
-      setImageTitle(title);
-      setImageSrc(src);
-      setImageLoading(true);
-      setViewerOpen(true);
-    };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [cleanupViewerObjectUrl, compareOpen]);
 
   useEffect(() => () => cleanupViewerObjectUrl(), [cleanupViewerObjectUrl]);
 
@@ -296,10 +204,6 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <Button variant="outline" size="sm" onClick={() => setCompareOpen(true)} className="gap-0 px-2 sm:gap-2 sm:px-2.5" title="模型对比" aria-label="模型对比">
-              <Columns2 className="w-4 h-4" />
-              <span className="hidden sm:inline">模型对比</span>
-            </Button>
             <ThemeToggle />
             <WideModeToggle enabled={wideMode} onToggle={onToggleWideMode} />
             <Button variant="outline" size="sm" onClick={onOpenSettings} className="gap-0 px-2 sm:gap-2 sm:px-2.5" title="设置" aria-label="设置">
@@ -309,28 +213,6 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
           </div>
         </div>
       </div>
-
-      {/* 模型对比全屏弹窗 */}
-      {compareOpen && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm">
-          <div className="relative h-[95vh] w-[95vw] rounded-xl border border-border bg-background shadow-2xl overflow-hidden">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setCompareOpen(false)}
-              className="absolute right-3 top-3 z-10 rounded-full bg-background/80 backdrop-blur-sm hover:bg-background"
-            >
-              <X className="h-5 w-5" />
-            </Button>
-            <iframe
-              src={MODEL_COMPARE_URL}
-              title="模型对比"
-              className="h-full w-full border-0"
-              allow="clipboard-read; clipboard-write"
-            />
-          </div>
-        </div>
-      )}
 
       {/* 随机图片全屏查看器 */}
       {viewerOpen && (

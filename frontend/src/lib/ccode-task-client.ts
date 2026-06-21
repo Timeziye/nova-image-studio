@@ -1,8 +1,18 @@
 import type { AspectRatio, OutputSize } from '@/lib/gemini-config';
-import { getModelOptions } from '@/lib/gemini-config';
 import type { GptImageBackground, GptImageQuality, GptImageStyle } from '@/lib/model-capabilities';
-import { loadRegistry, type ProviderProtocol } from '@/lib/nova-models';
-import { getReversePromptModelOptionsList } from '@/lib/reverse-prompt-config';
+import {
+  getCompleteImageModels,
+  getCompleteTextModels,
+  getImageModelById,
+  getTextModelById,
+  loadRegistry,
+  type ProviderProtocol,
+} from '@/lib/nova-models';
+import {
+  buildGeminiStreamGenerateContentUrl,
+  buildResponsesApiUrl,
+  normalizeModelBaseUrl,
+} from '@/lib/model-endpoints';
 
 export interface ImageReference {
   data: string;
@@ -13,6 +23,7 @@ export interface ModelStatus {
   modelId: string;
   available: boolean;
   actualName?: string;
+  message?: string;
 }
 
 const MODEL_CHECK_TIMEOUT = 30000;
@@ -84,17 +95,8 @@ export class NovaTaskError extends Error {
   }
 }
 
-interface NovaModelPayload {
-  id?: unknown;
-  model?: unknown;
-}
-
 interface CreateTaskResponse {
   taskId?: string;
-}
-
-interface ModelsResponse {
-  data?: NovaModelPayload[];
 }
 
 function getObjectProperty(data: unknown, key: string): unknown {
@@ -162,22 +164,6 @@ function normalizeModelCheckError(error: unknown): Error {
   return error instanceof Error ? error : new Error(errorMessage);
 }
 
-function getModelIdentifier(model: NovaModelPayload | undefined): string | null {
-  if (typeof model?.id === 'string' && model.id.trim().length > 0) {
-    return model.id;
-  }
-
-  if (typeof model?.model === 'string' && model.model.trim().length > 0) {
-    return model.model;
-  }
-
-  return null;
-}
-
-function matchNovaModel(models: NovaModelPayload[], modelId: string): NovaModelPayload | undefined {
-  return models.find((m) => getModelIdentifier(m) === modelId);
-}
-
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
@@ -214,44 +200,126 @@ export async function createNovaTask(input: CreateNovaTaskInput): Promise<string
 }
 
 export async function checkModelsAvailability(
-  apiKey: string,
   targetModelIds?: string[],
 ): Promise<ModelStatus[]> {
-  if (apiKey.trim().length === 0) {
-    throw new Error('缺少 API 密钥');
-  }
-
   try {
-    const response = await fetchWithTimeout('/api/nova/v1/models', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-    });
+    const registry = loadRegistry();
+    const completeImageModels = getCompleteImageModels(registry);
+    const completeTextModels = getCompleteTextModels(registry);
+    const imageModelIds = new Set(completeImageModels.map((model) => model.id));
+    const configuredModels = [
+      ...completeImageModels.map((model) => ({
+        id: model.id,
+        name: model.name,
+        protocol: model.protocol,
+        baseUrl: model.baseUrl,
+        apiKey: model.apiKey,
+        modelId: model.modelId,
+      })),
+      ...completeTextModels.map((model) => ({
+        id: model.id,
+        name: model.name,
+        protocol: model.protocol,
+        baseUrl: model.baseUrl,
+        apiKey: model.apiKey,
+        modelId: model.modelId,
+      })),
+    ];
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`模型检查失败: ${response.status} ${errorText}`);
+    const filteredModels = targetModelIds && targetModelIds.length > 0
+      ? configuredModels.filter((model) => targetModelIds.includes(model.id))
+      : configuredModels;
+
+    if (filteredModels.length === 0) {
+      return [];
     }
 
-    const data: ModelsResponse = await response.json().catch(() => ({}));
-    const models = Array.isArray(data.data) ? data.data : [];
+    return Promise.all(filteredModels.map(async (model) => {
+      try {
+        const normalizedBaseUrl = normalizeModelBaseUrl(model.protocol, model.baseUrl);
+        if (!normalizedBaseUrl || !model.apiKey || !model.modelId) {
+          return {
+            modelId: model.id,
+            actualName: model.name,
+            available: false,
+            message: '模型配置不完整',
+          };
+        }
 
-    const idsToCheck: string[] = targetModelIds && targetModelIds.length > 0
-      ? targetModelIds
-      : [
-          ...getModelOptions().map(({ value }) => value),
-          ...getReversePromptModelOptionsList().map(({ value }) => value),
-        ];
+        if (imageModelIds.has(model.id)) {
+          const listUrl = model.protocol === 'google'
+            ? `${normalizedBaseUrl}/v1beta/models`
+            : `${normalizedBaseUrl}/v1/models`;
+          const response = await fetchWithTimeout(listUrl, {
+            method: 'GET',
+            headers: model.protocol === 'google'
+              ? {
+                  'x-goog-api-key': model.apiKey,
+                  Authorization: `Bearer ${model.apiKey}`,
+                }
+              : {
+                  Authorization: `Bearer ${model.apiKey}`,
+                },
+          });
+          if (!response.ok) {
+            const detail = await response.text().catch(() => '');
+            return {
+              modelId: model.id,
+              actualName: model.name,
+              available: false,
+              message: `${response.status}${detail ? ` ${detail.slice(0, 120)}` : ''}`,
+            };
+          }
+          const data = await response.json().catch(() => ({})) as { data?: Array<{ id?: string; model?: string }>; models?: Array<{ name?: string }> };
+          const exists = model.protocol === 'google'
+            ? Array.isArray(data.models) && data.models.some((item) => String(item?.name || '').includes(model.modelId))
+            : Array.isArray(data.data) && data.data.some((item) => String(item?.id || item?.model || '') === model.modelId);
+          return {
+            modelId: model.id,
+            actualName: model.name,
+            available: exists,
+            message: exists ? model.modelId : `未在 /models 中找到 ${model.modelId}`,
+          };
+        }
 
-    return idsToCheck.map((modelId) => {
-      const matchedModel = matchNovaModel(models, modelId);
-      return {
-        modelId,
-        available: !!matchedModel,
-        actualName: getModelIdentifier(matchedModel) || modelId,
-      };
-    });
+        const response = await fetchWithTimeout(buildResponsesApiUrl(normalizedBaseUrl), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${model.apiKey}`,
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            model: model.modelId,
+            stream: false,
+            input: 'hi',
+            max_output_tokens: 4,
+          }),
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          return {
+            modelId: model.id,
+            actualName: model.name,
+            available: false,
+            message: `${response.status}${detail ? ` ${detail.slice(0, 120)}` : ''}`,
+          };
+        }
+        return {
+          modelId: model.id,
+          actualName: model.name,
+          available: true,
+          message: '文本响应正常',
+        };
+      } catch (error) {
+        return {
+          modelId: model.id,
+          actualName: model.name,
+          available: false,
+          message: getErrorMessage(error),
+        };
+      }
+    }));
   } catch (error) {
     throw normalizeModelCheckError(error);
   }
@@ -259,38 +327,22 @@ export async function checkModelsAvailability(
 
 export function resolveImageTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: ProviderProtocol } {
   const registry = loadRegistry();
-  const model = registry.imageModels.find((item) => item.id === modelId);
-  if (!model) {
-    return {
-      apiKey: registry.providers.openai.apiKey,
-      baseUrl: registry.providers.openai.baseUrl,
-      protocol: 'openai',
-    };
-  }
-
-  const provider = registry.providers[model.protocol];
+  const model = getImageModelById(registry, modelId);
+  if (!model) throw new Error(`未找到图片模型配置: ${modelId}`);
   return {
-    apiKey: provider.apiKey,
-    baseUrl: provider.baseUrl,
+    apiKey: model.apiKey,
+    baseUrl: model.baseUrl,
     protocol: model.protocol,
   };
 }
 
 export function resolveTextTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: ProviderProtocol } {
   const registry = loadRegistry();
-  const model = registry.textModels.find((item) => item.id === modelId);
-  if (!model) {
-    return {
-      apiKey: registry.providers.openai.apiKey,
-      baseUrl: registry.providers.openai.baseUrl,
-      protocol: 'openai',
-    };
-  }
-
-  const provider = registry.providers[model.protocol];
+  const model = getTextModelById(registry, modelId);
+  if (!model) throw new Error(`未找到文本模型配置: ${modelId}`);
   return {
-    apiKey: provider.apiKey,
-    baseUrl: provider.baseUrl,
+    apiKey: model.apiKey,
+    baseUrl: model.baseUrl,
     protocol: model.protocol,
   };
 }

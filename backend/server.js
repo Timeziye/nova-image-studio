@@ -87,6 +87,16 @@ function resolveNovaApiBaseUrl() {
   return normalizeBaseUrl(getRuntimeEnv().NOVA_API_BASE_URL) || 'https://api.openai.com';
 }
 
+function normalizeOpenAiBaseUrl(url) {
+  const normalized = normalizeBaseUrl(url);
+  return normalized.endsWith('/v1') ? normalized.slice(0, -3) : normalized;
+}
+
+function normalizeGoogleBaseUrl(url) {
+  const normalized = normalizeBaseUrl(url);
+  return normalized.endsWith('/v1beta') ? normalized.slice(0, -7) : normalized;
+}
+
 function hashPromptGalleryPassword(password) {
   return createHash('sha256')
     .update(`${PROMPT_GALLERY_PASSWORD_SALT}${String(password || '')}`)
@@ -1076,6 +1086,72 @@ async function fetchWithTimeout(url, init) {
   }
 }
 
+async function checkSingleModelAvailability(entry) {
+  const modelId = String(entry?.id || '').trim();
+  const actualName = String(entry?.name || entry?.modelId || modelId).trim() || modelId;
+  const protocol = String(entry?.protocol || '').trim();
+  const upstreamModelId = String(entry?.modelId || '').trim();
+  const apiKey = String(entry?.apiKey || '').trim();
+  const baseUrl = String(entry?.baseUrl || '').trim();
+
+  if (!modelId || !upstreamModelId || !apiKey || !baseUrl || !VALID_PROTOCOLS.has(protocol)) {
+    return {
+      modelId,
+      actualName,
+      available: false,
+      message: '模型配置不完整',
+    };
+  }
+
+  try {
+    if (protocol === 'openai') {
+      const url = `${normalizeOpenAiBaseUrl(baseUrl)}/v1/models/${encodeURIComponent(upstreamModelId)}`;
+      const response = await fetchWithTimeout(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+      });
+      if (!response.ok) {
+        const errorText = getUpstreamErrorText(await response.text());
+        return {
+          modelId,
+          actualName,
+          available: false,
+          message: `${response.status}${errorText ? ` ${errorText}` : ''}`,
+        };
+      }
+      return { modelId, actualName, available: true };
+    }
+
+    const url = `${normalizeGoogleBaseUrl(baseUrl)}/v1beta/models/${encodeURIComponent(upstreamModelId)}`;
+    const response = await fetchWithTimeout(url, {
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey,
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+    if (!response.ok) {
+      const errorText = getUpstreamErrorText(await response.text());
+      return {
+        modelId,
+        actualName,
+        available: false,
+        message: `${response.status}${errorText ? ` ${errorText}` : ''}`,
+      };
+    }
+    return { modelId, actualName, available: true };
+  } catch (error) {
+    return {
+      modelId,
+      actualName,
+      available: false,
+      message: normalizeError(error),
+    };
+  }
+}
+
 async function generateNovaImage(apiKey, request) {
   // 开源版：根据前端传入的 protocol 字段路由到对应的 API 协议
   const baseUrl = request.baseUrl || resolveNovaApiBaseUrl();
@@ -1519,6 +1595,14 @@ async function handleApi(req, res, pathname) {
       const password = String(body?.password || '');
       const ok = hashPromptGalleryPassword(password) === hashPromptGalleryPassword(expected);
       sendJson(res, 200, { ok });
+      return true;
+    }
+
+    if (req.method === 'POST' && apiPathname === '/api/nova/check-models') {
+      const body = await readJsonBody(req);
+      const models = Array.isArray(body?.models) ? body.models : [];
+      const results = await Promise.all(models.map(checkSingleModelAvailability));
+      sendJson(res, 200, { models: results });
       return true;
     }
 

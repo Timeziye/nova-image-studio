@@ -1,7 +1,7 @@
 // 反推提示词的前端直连流式客户端
 // 根据模型分发：
-//   - gpt-5.4-mini-c        → POST /v1/responses          （OpenAI Responses API + reasoning.high）
-//   - gemini-3.1-pro-preview-c → POST /v1beta/.../streamGenerateContent?alt=sse （Google 原生 + 最高思考预算）
+//   - gpt-5.4-mini          → POST /v1/responses          （OpenAI Responses API + reasoning.high）
+//   - gemini-2.5-flash      → POST /v1beta/.../streamGenerateContent?alt=sse （Google 原生流式）
 // 所有请求直接从浏览器发到外部 API（baseUrl 参数指定），不经过我们自己的服务器。
 
 import {
@@ -9,7 +9,7 @@ import {
   type ReversePromptMode,
   type ReversePromptModelId,
 } from '@/lib/reverse-prompt-config';
-
+import { buildGeminiStreamGenerateContentUrl, buildResponsesApiUrl, getConfiguredTextModel } from '@/lib/model-endpoints';
 import { readSseStream } from '@/lib/sse-stream-parser';
 
 export interface StreamReverseInput {
@@ -45,12 +45,16 @@ export function streamReversePrompt(
 
   const promise = (async () => {
     try {
-      if (input.model === 'gpt-5.4-mini-c') {
-        await streamOpenAiResponses(baseUrl, input, callbacks, controller.signal);
-      } else if (input.model === 'gemini-3.1-pro-preview-c') {
-        await streamGeminiGenerateContent(baseUrl, input, callbacks, controller.signal);
+      const configuredModel = getConfiguredTextModel(input.model);
+      const protocol = configuredModel?.protocol;
+      const resolvedBaseUrl = configuredModel?.baseUrl || baseUrl;
+      const resolvedModelId = configuredModel?.modelId || input.model;
+      if (protocol === 'openai') {
+        await streamOpenAiResponses(resolvedBaseUrl, { ...input, model: resolvedModelId }, callbacks, controller.signal);
+      } else if (protocol === 'google') {
+        await streamGeminiGenerateContent(resolvedBaseUrl, { ...input, model: resolvedModelId }, callbacks, controller.signal);
       } else {
-        throw new Error(`暂不支持的反推模型: ${String(input.model)}`);
+        throw new Error(`暂不支持的反推模型协议: ${String(protocol || 'unknown')}`);
       }
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -96,7 +100,7 @@ async function streamOpenAiResponses(
     ],
   };
 
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+  const response = await fetch(buildResponsesApiUrl(baseUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -226,7 +230,7 @@ async function streamGeminiGenerateContent(
     },
   };
 
-  const url = `${baseUrl}/v1beta/models/${encodeURIComponent(input.model)}:streamGenerateContent?alt=sse`;
+  const url = buildGeminiStreamGenerateContentUrl(baseUrl, input.model);
   const response = await fetch(url, {
     method: 'POST',
     headers: {

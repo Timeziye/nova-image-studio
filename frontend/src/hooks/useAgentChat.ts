@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getApiKeyFromStorage, hasAnyApiKey } from '@/lib/settings-storage';
+import { hasAnyApiKey } from '@/lib/settings-storage';
 import { generateUUID } from '@/lib/uuid';
-import { createNovaTask, getNovaTask, type ImageReference } from '@/lib/ccode-task-client';
+import { createNovaTask, getNovaTask, resolveImageTaskProvider, type ImageReference } from '@/lib/ccode-task-client';
 import { fetchImageAsBlob } from '@/lib/image-downloader';
 import {
   getGptImageAdvancedParamsForModel,
@@ -40,6 +40,7 @@ import {
   clearPendingGeneration,
   type PendingGenerationData,
 } from '@/lib/agent-context-store';
+import { getDefaultConfiguredTextModel } from '@/lib/model-endpoints';
 
 export type AgentPhase = 'idle' | 'loading' | 'describing' | 'streaming' | 'proposal' | 'generating';
 
@@ -195,6 +196,17 @@ export function useAgentChat() {
   /** 保存当前提案引用，生图完成后若 state proposal 已被清除时仍可获取 reason 等字段 */
   const proposalRef = useRef<AgentProposal | null>(null);
 
+  const getAgentTextModelConfig = useCallback(() => {
+    const configured = getDefaultConfiguredTextModel('agent');
+    if (!configured?.apiKey || !configured.baseUrl || !configured.modelId) {
+      throw new Error('请先在设置中完成 Agent 默认文本模型配置');
+    }
+    if (configured.protocol !== 'openai') {
+      throw new Error('当前 Agent 仅支持 OpenAI Response 文本模型');
+    }
+    return configured;
+  }, []);
+
   // ===== 流式更新批处理（rAF 节流） =====
   const streamingTextBufRef = useRef('');
   const streamingReasoningBufRef = useRef('');
@@ -316,7 +328,14 @@ export function useAgentChat() {
 
     let description = '';
     try {
-      description = await describeImage(getApiKeyFromStorage(), previewDataUrl, describeSignal);
+      const configured = getAgentTextModelConfig();
+      description = await describeImage(
+        configured.apiKey,
+        configured.modelId,
+        previewDataUrl,
+        describeSignal,
+        configured.baseUrl,
+      );
     } catch {
       description = '(图片描述生成失败)';
     }
@@ -341,15 +360,23 @@ export function useAgentChat() {
   const redescribeImage = useCallback(async (imgId: string): Promise<string> => {
     const record = images.find(img => img.imgId === imgId);
     if (!record) throw new Error(`图片 ${imgId} 不存在`);
-    const newDescription = await describeImage(getApiKeyFromStorage(), record.thumbnail);
+    const configured = getAgentTextModelConfig();
+    const newDescription = await describeImage(
+      configured.apiKey,
+      configured.modelId,
+      record.thumbnail,
+      undefined,
+      configured.baseUrl,
+    );
     const description = newDescription || '(无描述)';
     const updated: AgentImageRecord = { ...record, description };
     setImages(prev => prev.map(img => img.imgId === imgId ? updated : img));
     void putImageRecord(updated);
     return description;
-  }, [images]);
+  }, [getAgentTextModelConfig, images]);
 
   const runChat = useCallback((history: AgentMessage[], catalog: AgentImageRecord[]) => {
+    const configured = getAgentTextModelConfig();
     setPhase('streaming');
     flushAndCancelRaf();
     setStreamingText('');
@@ -359,7 +386,8 @@ export function useAgentChat() {
 
     const handle = streamAgentChat(
       {
-        apiKey: getApiKeyFromStorage(),
+        apiKey: configured.apiKey,
+        model: configured.modelId,
         history,
         webSearch: webSearchEnabled,
         catalog: catalog.map(img => ({ imgId: img.imgId, description: img.description })),
@@ -420,9 +448,10 @@ export function useAgentChat() {
           setPhase('idle');
         },
       },
+      configured.baseUrl,
     );
     streamHandleRef.current = handle;
-  }, [appendMessage, appendStreamingToken, flushAndCancelRaf, webSearchEnabled]);
+  }, [appendMessage, appendStreamingToken, flushAndCancelRaf, getAgentTextModelConfig, webSearchEnabled]);
 
   const sendMessage = useCallback(async (text: string, uploads: PendingUpload[], imageReferences?: string[]) => {
     if (phase !== 'idle') return;
@@ -766,12 +795,12 @@ export function useAgentChat() {
         if (bytes) references.push({ data: bytes.data, mimeType: bytes.mimeType });
       }
       const mode = references.length > 0 ? 'image-to-image' : 'text-to-image';
+      const provider = resolveImageTaskProvider(model);
 
-      // TODO: 从模型注册表读取实际的 baseUrl 和 protocol
       const taskId = await createNovaTask({
-        apiKey: getApiKeyFromStorage(),
-        baseUrl: 'https://api.openai.com',
-        protocol: 'openai',
+        apiKey: provider.apiKey,
+        baseUrl: provider.baseUrl,
+        protocol: provider.protocol,
         mode,
         prompt,
         outputSize: params.outputSize,

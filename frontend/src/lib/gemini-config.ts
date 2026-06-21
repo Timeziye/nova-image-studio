@@ -1,5 +1,6 @@
 import {
   BUILTIN_IMAGE_PRESETS,
+  getCompleteImageModels,
   getImageModelOutputSizes,
   loadRegistry,
   type BuiltinImagePresetId,
@@ -32,7 +33,7 @@ function replaceRecord<T>(target: Record<string, T>, next: Record<string, T>) {
 }
 
 function getRegistryImageModels(): ImageModelConfig[] {
-  return loadRegistry().imageModels;
+  return getCompleteImageModels(loadRegistry());
 }
 
 export function getModelOptions(): ModelOption[] {

@@ -135,7 +135,8 @@ export function ImageGenerationWorkbench({
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const optimizeHandleRef = useRef<StreamPromptOptimizeHandle | null>(null);
 
-  const maxImages = MODEL_IMAGE_LIMITS[model].max;
+  const modelLimit = MODEL_IMAGE_LIMITS[model] || { max: 1, description: '最多 1 张参考图片' };
+  const maxImages = modelLimit.max;
   const aspectRatioOptions = useMemo(() => getAspectRatioOptions(model, outputSize), [model, outputSize]);
   const currentMode: WorkbenchMode = pendingFiles.length > 0 ? 'image-to-image' : 'text-to-image';
   const autoLayoutLocked = outputSize === 'auto';
@@ -318,7 +319,6 @@ export function ImageGenerationWorkbench({
       return;
     }
     if (pendingFiles.length + filesToProcess.length > maxImages) {
-      const modelLimit = MODEL_IMAGE_LIMITS[model];
       setUploadError(`${MODEL_OPTIONS.find(o => o.value === model)?.label} ${modelLimit.description}`);
       return;
     }

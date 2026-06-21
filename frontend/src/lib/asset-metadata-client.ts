@@ -2,7 +2,7 @@
 
 
 
-const ASSET_METADATA_MODEL = 'gpt-5.4-mini-c';
+const ASSET_METADATA_MODEL = 'gpt-5.4-mini';
 
 export interface AssetMetadataSuggestion {
   name: string;

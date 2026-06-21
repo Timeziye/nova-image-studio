@@ -4,7 +4,7 @@
 
 import { readSseStream } from '@/lib/sse-stream-parser';
 
-const OPTIMIZE_MODEL = 'gpt-5.4-mini-c';
+const OPTIMIZE_MODEL = 'gpt-5.4-mini';
 const OPTIMIZE_TIMEOUT_MS = 30_000;
 const OPTIMIZE_MAX_ATTEMPTS = 2;
 

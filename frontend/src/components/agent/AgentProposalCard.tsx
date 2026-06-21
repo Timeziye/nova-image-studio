@@ -74,7 +74,7 @@ export function AgentProposalCard({
   onApprove,
   onCancel,
 }: AgentProposalCardProps) {
-  const maxRefs = MODEL_IMAGE_LIMITS[imageModel].max;
+  const maxRefs = (MODEL_IMAGE_LIMITS[imageModel]?.max) || 1;
   const [prompt, setPrompt] = useState(proposal.prompt);
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
     proposal.referencedImageIds.filter(id => images.some(img => img.imgId === id)).slice(0, maxRefs)

@@ -27,8 +27,6 @@ function isBlobRef(value: unknown): value is BlobRef {
 
 // localStorage keys to backup
 const LOCAL_STORAGE_KEYS = [
-    'cc-api-k',
-    'nova-api-key',
     'nova-model-registry',
     'nova-jobs',
     'nova-t2i-settings',
@@ -383,9 +381,6 @@ function importLocalStorage(data: unknown): void {
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return;
 
     const allowedKeySet = new Set(LOCAL_STORAGE_KEYS);
-    allowedKeySet.add('cc-api-k');
-    allowedKeySet.add('ccode-api-key');
-
     for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
         if (!allowedKeySet.has(key)) continue;
         if (typeof value !== 'string') continue;
@@ -573,7 +568,6 @@ export async function importAllData(file: File, onProgress?: ProgressCallback): 
             // skip failed localStorage removal
         }
     }
-    try { localStorage.removeItem('ccode-api-key'); } catch { /* ignore */ }
 
     if (onProgress) {
         onProgress({ percent: 15, message: '正在导入 localStorage...' });

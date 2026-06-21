@@ -3,6 +3,7 @@
 // system prompt 模板保留在此文件
 
 import type { TextModelConfig } from '@/lib/nova-models';
+import { getDefaultConfiguredTextModel, getConfiguredTextModel } from '@/lib/model-endpoints';
 
 export type ReversePromptModelId = string;
 
@@ -49,7 +50,7 @@ export const REVERSE_PROMPT_MODE_OPTIONS: ReversePromptModeOption[] = [
 export const DEFAULT_REVERSE_MODE: ReversePromptMode = 'style-extract';
 
 /** 默认反推模型 ID（实际使用时从注册表读取） */
-export const DEFAULT_REVERSE_MODEL = 'gpt-4o-mini';
+export const DEFAULT_REVERSE_MODEL = '';
 
 /** 获取反推模型选项列表（需要传入注册表的文字模型） */
 export function getReverseModelOptions(textModels: TextModelConfig[]): ReversePromptModelOption[] {
@@ -63,9 +64,9 @@ export function getReverseModelOptions(textModels: TextModelConfig[]): ReversePr
  */
 export function getReversePromptModelOptionsList(): ReversePromptModelOption[] {
   if (typeof window === 'undefined') return [];
-  const { loadRegistry } = require('@/lib/nova-models');
+  const { loadRegistry, getCompleteTextModels } = require('@/lib/nova-models');
   const registry = loadRegistry();
-  return getReversePromptModelOptions(registry.textModels);
+  return getReversePromptModelOptions(getCompleteTextModels(registry));
 }
 
 /** @deprecated Use getReversePromptModelOptionsList() */
@@ -74,7 +75,7 @@ export const REVERSE_PROMPT_MODEL_OPTIONS: ReversePromptModelOption[] = [];
 /** 获取单个模型选项 */
 export function getReverseModelOption(modelId: string, textModels?: TextModelConfig[]): ReversePromptModelOption {
   const models = textModels || [];
-  const found = models.find(m => m.id === modelId);
+  const found = models.find(m => m.id === modelId) || getConfiguredTextModel(modelId);
   if (found) {
     return {
       value: found.id,
@@ -84,6 +85,10 @@ export function getReverseModelOption(modelId: string, textModels?: TextModelCon
     };
   }
   return { value: modelId, label: modelId, provider: 'openai', description: '' };
+}
+
+export function getDefaultReversePromptModelId(): string {
+  return getDefaultConfiguredTextModel('reversePrompt')?.id || '';
 }
 
 /** 判断是否为有效的反推模型 ID */

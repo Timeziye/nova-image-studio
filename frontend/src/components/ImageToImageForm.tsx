@@ -127,7 +127,8 @@ export function ImageToImageForm({
   const [settingsReady, setSettingsReady] = useState(false);
 
   // 根据当前模型限制上传数量
-  const maxImages = MODEL_IMAGE_LIMITS[model].max;
+  const modelLimit = MODEL_IMAGE_LIMITS[model] || { max: 1, description: '最多 1 张参考图片' };
+  const maxImages = modelLimit.max;
 
   const [isDragOver, setIsDragOver] = useState(false);
   const [loading, setLoading] = useState(false);

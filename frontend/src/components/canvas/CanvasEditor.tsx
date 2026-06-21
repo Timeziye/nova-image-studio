@@ -630,7 +630,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       const promptText = configNode.metadata?.composerContent ?? configNode.metadata?.prompt ?? "";
       const genConfig: CanvasGenerationConfig = configNode.metadata?.genConfig ?? defaultConfig;
       const model = normalizeModel(genConfig.model);
-      const max = MODEL_IMAGE_LIMITS[model].max;
+      const max = MODEL_IMAGE_LIMITS[model]?.max || 1;
       const context = buildNodeGenerationContext(configNode.id, nodes, connections, promptText);
       return { imageCount: context.imageCount, max, exceeded: context.imageCount > max };
     },
@@ -698,7 +698,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       const count = genConfig.count;
       const context = buildNodeGenerationContext(sourceNode.id, nodes, connections, promptText);
       const model = normalizeModel(genConfig.model);
-      const maxReferenceImages = MODEL_IMAGE_LIMITS[model].max;
+      const maxReferenceImages = MODEL_IMAGE_LIMITS[model]?.max || 1;
 
       if (context.imageCount > maxReferenceImages) {
         showToast("参考图超过模型限制", "error");
