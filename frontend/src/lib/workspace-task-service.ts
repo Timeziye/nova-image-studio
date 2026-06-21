@@ -1,10 +1,10 @@
 import {
   createNovaTask,
   ackNovaTask,
+  resolveImageTaskProvider,
   type NovaTaskResponse,
   type ImageReference,
 } from '@/lib/ccode-task-client';
-import { getApiKeyFromStorage } from '@/lib/settings-storage';
 import type { ModelId } from '@/lib/gemini-config';
 import type { AspectRatio, OutputSize, StoredJob } from '@/lib/job-store';
 import {
@@ -320,7 +320,8 @@ export async function submitTextToImage(
   actions: SubmitActions,
   onError: (message: string) => void
 ): Promise<void> {
-  const apiKey = getApiKeyFromStorage();
+  const provider = resolveImageTaskProvider(input.model);
+  const apiKey = provider.apiKey;
 
   if (!apiKey) {
     onError('请先配置 API 密钥');
@@ -344,11 +345,10 @@ export async function submitTextToImage(
     actions.addJob(job);
 
     try {
-      // TODO: 从模型注册表读取实际的 baseUrl 和 protocol
       const serverTaskId = await createNovaTask({
         apiKey,
-        baseUrl: 'https://api.openai.com',
-        protocol: 'openai',
+        baseUrl: provider.baseUrl,
+        protocol: provider.protocol,
         mode: 'text-to-image',
         prompt,
         outputSize: input.outputSize,
@@ -379,7 +379,8 @@ export async function submitImageToImage(
   actions: SubmitActions,
   onError: (message: string) => void
 ): Promise<void> {
-  const apiKey = getApiKeyFromStorage();
+  const provider = resolveImageTaskProvider(input.model);
+  const apiKey = provider.apiKey;
 
   if (!apiKey) {
     onError('请先配置 API 密钥');
@@ -411,11 +412,10 @@ export async function submitImageToImage(
   actions.addJob(job);
 
   try {
-    // TODO: 从模型注册表读取实际的 baseUrl 和 protocol
     const serverTaskId = await createNovaTask({
       apiKey,
-      baseUrl: 'https://api.openai.com',
-      protocol: 'openai',
+      baseUrl: provider.baseUrl,
+      protocol: provider.protocol,
       mode: 'image-to-image',
       prompt: input.prompt,
       outputSize: input.outputSize,

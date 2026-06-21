@@ -56,8 +56,8 @@ export function WorkspaceShell() {
   const [generationClearScope, setGenerationClearScope] = useState<HistoryClearScope | null>(null);
   const [referenceDraft, setReferenceDraft] = useState<{ id: number; refImages: RefImageData[] } | null>(null);
   const workspace = useWorkspaceJobs();
-  const galleryMode = usePromptGalleryConfig();
-  const promptGallery = usePromptGalleryAccess(galleryMode, setError, () => setActiveTab('prompt-gallery'));
+  const galleryConfig = usePromptGalleryConfig();
+  const promptGallery = usePromptGalleryAccess(galleryConfig.mode, galleryConfig.passwordEnabled, setError, () => setActiveTab('prompt-gallery'));
 
   // Toast state
   const [toasts, setToasts] = useState<ToastData[]>([]);

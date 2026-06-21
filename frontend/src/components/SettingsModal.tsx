@@ -1,33 +1,57 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { Settings, Key, Info, Eye, EyeOff, ExternalLink, PencilLine, ShieldCheck, Trash2, RefreshCw, CheckCircle2, XCircle, Database, Download, Upload } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CheckCircle2,
+  Database,
+  Download,
+  ExternalLink,
+  ImageIcon,
+  Info,
+  Key,
+  Plus,
+  RefreshCw,
+  Save,
+  Settings,
+  Trash2,
+  Upload,
+  Wand2,
+  XCircle,
+} from 'lucide-react';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { BackupProgress } from '@/components/BackupProgress';
-import { exportAllData, importAllData, downloadBlob, generateBackupFilename, type BackupProgress as BackupProgressType } from '@/lib/backup-utils';
-import { checkModelsAvailability, type ModelStatus } from '@/lib/ccode-task-client';
-import { MODEL_OPTIONS, TOKEN_MODEL_OPTIONS } from '@/lib/gemini-config';
-import { REVERSE_PROMPT_MODEL_OPTIONS } from '@/lib/reverse-prompt-config';
 import {
-  getApiKeyFromStorage,
-  getStoredApiKey,
-  hasAnyApiKey,
-  removeStoredApiKey,
-  setStoredApiKey,
-} from '@/lib/settings-storage';
+  BUILTIN_IMAGE_PRESET_OPTIONS,
+  DEFAULT_DEFAULTS,
+  DEFAULT_IMAGE_MODELS,
+  DEFAULT_TEXT_MODELS,
+  generateModelId,
+  getImageModelOutputSizes,
+  loadRegistry,
+  saveRegistry,
+  type DefaultModels,
+  type ImageModelConfig,
+  type ProviderProtocol,
+  type TextModelConfig,
+} from '@/lib/nova-models';
+import { syncDynamicModelExports } from '@/lib/gemini-config';
+import { getReversePromptModelOptionsList } from '@/lib/reverse-prompt-config';
+import { exportAllData, importAllData, downloadBlob, generateBackupFilename, type BackupProgress as BackupProgressType } from '@/lib/backup-utils';
+import { checkModelsAvailability, resolveImageTaskProvider, type ModelStatus } from '@/lib/ccode-task-client';
+import { hasAnyApiKey } from '@/lib/settings-storage';
 import { BA_RANDOM_URL, BING_WALLPAPER_URL } from '@/lib/constants';
 import { PROMPT_DATA_SOURCES, getPromptSourceLabel } from '@/lib/prompt-gallery-data';
-
-export { getApiKeyFromStorage, hasAnyApiKey };
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -35,17 +59,69 @@ interface SettingsModalProps {
   onApiKeyChange?: (hasKey: boolean) => void;
 }
 
+type ProviderForm = {
+  protocol: ProviderProtocol;
+  apiKey: string;
+  baseUrl: string;
+};
+
+type DefaultsForm = DefaultModels;
+
+function cloneImageModel(model: ImageModelConfig): ImageModelConfig {
+  return { ...model };
+}
+
+function cloneTextModel(model: TextModelConfig): TextModelConfig {
+  return { ...model };
+}
+
+function createImageModelDraft(from?: ImageModelConfig): ImageModelConfig {
+  if (from) return cloneImageModel(from);
+  const fallback = DEFAULT_IMAGE_MODELS[0];
+  return {
+    ...fallback,
+    id: generateModelId('img'),
+    name: '',
+    modelId: '',
+  };
+}
+
+function createTextModelDraft(from?: TextModelConfig): TextModelConfig {
+  if (from) return cloneTextModel(from);
+  const fallback = DEFAULT_TEXT_MODELS[0];
+  return {
+    ...fallback,
+    id: generateModelId('txt'),
+    name: '',
+    modelId: '',
+    note: '',
+  };
+}
+
+function getTextModelLabel(models: TextModelConfig[], id: string): string {
+  return models.find((model) => model.id === id)?.name || id;
+}
+
+function getImageModelLabel(models: ImageModelConfig[], id: string): string {
+  return models.find((model) => model.id === id)?.name || id;
+}
+
 export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModalProps) {
-  const [apiKey, setApiKey] = useState('');
-  const [hasKey, setHasKey] = useState(false);
-  const [showKey, setShowKey] = useState(false);
+  const [providers, setProviders] = useState<Record<ProviderProtocol, ProviderForm>>({
+    google: { protocol: 'google', apiKey: '', baseUrl: '' },
+    openai: { protocol: 'openai', apiKey: '', baseUrl: '' },
+  });
+  const [imageModels, setImageModels] = useState<ImageModelConfig[]>([]);
+  const [textModels, setTextModels] = useState<TextModelConfig[]>([]);
+  const [defaults, setDefaults] = useState<DefaultsForm>(DEFAULT_DEFAULTS);
+  const [selectedImageModelId, setSelectedImageModelId] = useState<string>('');
+  const [selectedTextModelId, setSelectedTextModelId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
   const [checkingModels, setCheckingModels] = useState(false);
   const [modelStatuses, setModelStatuses] = useState<ModelStatus[] | null>(null);
   const [modelCheckError, setModelCheckError] = useState<string | null>(null);
 
-  // 备份相关状态
   const [backupProgress, setBackupProgress] = useState<BackupProgressType>({ percent: 0, message: '' });
   const [isBackupActive, setIsBackupActive] = useState(false);
   const [backupError, setBackupError] = useState<string | null>(null);
@@ -54,14 +130,19 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
 
   useEffect(() => {
     if (!isOpen) return;
-
     queueMicrotask(() => {
-      const storedKey = getStoredApiKey();
-      setHasKey(!!storedKey);
-      setApiKey('');
-      setEditing(false);
-      setShowKey(false);
+      const registry = loadRegistry();
+      setProviders({
+        google: { ...registry.providers.google },
+        openai: { ...registry.providers.openai },
+      });
+      setImageModels(registry.imageModels.map(cloneImageModel));
+      setTextModels(registry.textModels.map(cloneTextModel));
+      setDefaults({ ...registry.defaults });
+      setSelectedImageModelId(registry.imageModels[0]?.id || '');
+      setSelectedTextModelId(registry.textModels[0]?.id || '');
       setError(null);
+      setSuccess(null);
       setModelStatuses(null);
       setModelCheckError(null);
       setBackupError(null);
@@ -69,37 +150,129 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     });
   }, [isOpen]);
 
-  const saveKey = () => {
-    if (!apiKey.trim()) return;
-    setError(null);
+  const selectedImageModel = useMemo(
+    () => imageModels.find((model) => model.id === selectedImageModelId) || null,
+    [imageModels, selectedImageModelId],
+  );
+  const selectedTextModel = useMemo(
+    () => textModels.find((model) => model.id === selectedTextModelId) || null,
+    [selectedTextModelId, textModels],
+  );
 
-    if (!setStoredApiKey(apiKey.trim())) {
-      setError('浏览器阻止了本地存储，无法保存 API 密钥');
+  const handleProviderChange = (protocol: ProviderProtocol, patch: Partial<ProviderForm>) => {
+    setProviders((prev) => ({
+      ...prev,
+      [protocol]: { ...prev[protocol], ...patch },
+    }));
+  };
+
+  const handleAddImageModel = () => {
+    const draft = createImageModelDraft();
+    setImageModels((prev) => [...prev, draft]);
+    setSelectedImageModelId(draft.id);
+  };
+
+  const handleUpdateImageModel = (id: string, patch: Partial<ImageModelConfig>) => {
+    setImageModels((prev) => prev.map((model) => {
+      if (model.id !== id) return model;
+      const next = { ...model, ...patch };
+      if (patch.builtinPreset) {
+        const fallback = DEFAULT_IMAGE_MODELS.find((item) => item.builtinPreset === patch.builtinPreset);
+        if (fallback) {
+          next.protocol = fallback.protocol;
+          next.maxRefImages = fallback.maxRefImages;
+          next.maxOutputSize = fallback.maxOutputSize;
+          next.supportsAdvancedParams = fallback.supportsAdvancedParams;
+          next.advancedParamsEnabledByDefault = fallback.advancedParamsEnabledByDefault;
+          if (!next.name.trim()) next.name = fallback.name;
+        }
+      }
+      return next;
+    }));
+  };
+
+  const handleDeleteImageModel = (id: string) => {
+    setImageModels((prev) => prev.filter((model) => model.id !== id));
+    setDefaults((prev) => ({
+      ...prev,
+      textToImage: prev.textToImage === id ? imageModels.find((model) => model.id !== id)?.id || '' : prev.textToImage,
+      imageToImage: prev.imageToImage === id ? imageModels.find((model) => model.id !== id)?.id || '' : prev.imageToImage,
+    }));
+    if (selectedImageModelId === id) {
+      const next = imageModels.find((model) => model.id !== id);
+      setSelectedImageModelId(next?.id || '');
+    }
+  };
+
+  const handleAddTextModel = () => {
+    const draft = createTextModelDraft();
+    setTextModels((prev) => [...prev, draft]);
+    setSelectedTextModelId(draft.id);
+  };
+
+  const handleUpdateTextModel = (id: string, patch: Partial<TextModelConfig>) => {
+    setTextModels((prev) => prev.map((model) => (model.id === id ? { ...model, ...patch } : model)));
+  };
+
+  const handleDeleteTextModel = (id: string) => {
+    setTextModels((prev) => prev.filter((model) => model.id !== id));
+    setDefaults((prev) => {
+      const nextId = textModels.find((model) => model.id !== id)?.id || '';
+      return {
+        ...prev,
+        reversePrompt: prev.reversePrompt === id ? nextId : prev.reversePrompt,
+        agent: prev.agent === id ? nextId : prev.agent,
+        promptOptimize: prev.promptOptimize === id ? nextId : prev.promptOptimize,
+        imageDescribe: prev.imageDescribe === id ? nextId : prev.imageDescribe,
+      };
+    });
+    if (selectedTextModelId === id) {
+      const next = textModels.find((model) => model.id !== id);
+      setSelectedTextModelId(next?.id || '');
+    }
+  };
+
+  const persistRegistry = () => {
+    if (imageModels.length === 0) {
+      setError('至少保留一个图片模型');
+      return;
+    }
+    if (textModels.length === 0) {
+      setError('至少保留一个文本模型');
+      return;
+    }
+    if (imageModels.some((model) => !model.name.trim() || !model.modelId.trim())) {
+      setError('图片模型的显示名称和模型 ID 不能为空');
+      return;
+    }
+    if (textModels.some((model) => !model.name.trim() || !model.modelId.trim())) {
+      setError('文本模型的显示名称和模型 ID 不能为空');
       return;
     }
 
-    setHasKey(true);
-    setEditing(false);
-    setShowKey(false);
-    setApiKey('');
-    onApiKeyChange?.(true);
-  };
-
-  const removeKey = () => {
-    removeStoredApiKey();
-    setHasKey(false);
-    setApiKey('');
-    setEditing(false);
-    setShowKey(false);
+    const registry = {
+      providers,
+      imageModels,
+      textModels,
+      defaults,
+    };
+    saveRegistry(registry);
+    syncDynamicModelExports();
+    window.dispatchEvent(new Event('nova-model-registry-updated'));
+    setSuccess('设置已保存');
+    setError(null);
     setModelStatuses(null);
     setModelCheckError(null);
     onApiKeyChange?.(hasAnyApiKey());
   };
 
   const handleCheckModels = async () => {
-    const storedKey = getStoredApiKey();
-    if (!storedKey) {
-      setModelCheckError('请先保存 API 密钥');
+    const firstAvailableProvider = providers.openai.apiKey.trim()
+      ? providers.openai
+      : (providers.google.apiKey.trim() ? providers.google : null);
+
+    if (!firstAvailableProvider) {
+      setModelCheckError('请先配置至少一个提供商 API Key');
       return;
     }
 
@@ -108,13 +281,11 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     setModelStatuses(null);
 
     try {
-      // 把图像生成模型 + token 模型 + 反推提示词模型一起送去检查（仅匹配 /v1/models 列表，不发付费请求）
       const allIds = [
-        ...MODEL_OPTIONS.map(o => o.value),
-        ...TOKEN_MODEL_OPTIONS.map(o => o.value),
-        ...REVERSE_PROMPT_MODEL_OPTIONS.map(o => o.value),
+        ...imageModels.map((model) => model.id),
+        ...textModels.map((model) => model.id),
       ];
-      const statuses = await checkModelsAvailability(storedKey, allIds);
+      const statuses = await checkModelsAvailability(firstAvailableProvider.apiKey, allIds);
       setModelStatuses(statuses);
     } catch (err) {
       setModelCheckError(err instanceof Error ? err.message : '检查模型失败');
@@ -127,12 +298,8 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     setIsBackupActive(true);
     setBackupError(null);
     setBackupSuccess(null);
-
     try {
-      const blob = await exportAllData((progress) => {
-        setBackupProgress(progress);
-      });
-
+      const blob = await exportAllData((progress) => setBackupProgress(progress));
       const filename = generateBackupFilename();
       downloadBlob(blob, filename);
       setBackupSuccess(`数据已成功导出为 ${filename}`);
@@ -154,13 +321,8 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     setBackupSuccess(null);
 
     try {
-      await importAllData(file, (progress) => {
-        setBackupProgress(progress);
-      });
-
-      setBackupSuccess('数据已成功导入！页面将在 2 秒后刷新以应用更改...');
-
-      // 延迟刷新页面以应用导入的数据
+      await importAllData(file, (progress) => setBackupProgress(progress));
+      setBackupSuccess('数据已成功导入，页面将在 2 秒后刷新。');
       setTimeout(() => {
         window.location.reload();
       }, 2000);
@@ -170,37 +332,35 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      handleImport(file);
-    }
-    // 重置 input 以允许选择同一文件
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) handleImport(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
+
+  const imageModelOptions = imageModels.map((model) => ({ value: model.id, label: model.name || model.id }));
+  const textModelOptions = textModels.map((model) => ({ value: model.id, label: model.name || model.id }));
+  const selectedImageOutputSizes = selectedImageModel ? getImageModelOutputSizes(selectedImageModel) : ['1K'];
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => {
-      // 在备份操作进行时阻止关闭
       if (!open && isBackupActive) return;
       if (!open) onClose();
     }}>
-      <DialogContent className="flex flex-col overflow-hidden p-0 pt-0 gap-0 sm:max-w-xl">
+      <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden p-0 pt-0 gap-0 sm:max-w-5xl">
         <DialogHeader className="p-4 pb-3">
           <div className="flex items-center gap-2">
             <Settings className="w-5 h-5 text-muted-foreground" />
             <DialogTitle>设置</DialogTitle>
           </div>
-          <DialogDescription>管理你的应用设置</DialogDescription>
+          <DialogDescription>管理提供商、模型和默认任务配置</DialogDescription>
         </DialogHeader>
 
-        <Tabs defaultValue="api" className="min-h-0 flex-1 gap-0">
+        <Tabs defaultValue="models" className="min-h-0 flex-1 gap-0">
           <TabsList className="w-full rounded-none border-b bg-transparent h-auto p-0">
-            <TabsTrigger value="api" className="gap-2 rounded-none border-b-2 border-transparent data-active:border-primary data-active:bg-transparent data-active:shadow-none px-4 py-3">
-              <Key className="w-4 h-4" />
-              API 密钥
+            <TabsTrigger value="models" className="gap-2 rounded-none border-b-2 border-transparent data-active:border-primary data-active:bg-transparent data-active:shadow-none px-4 py-3">
+              <ImageIcon className="w-4 h-4" />
+              模型与提供商
             </TabsTrigger>
             <TabsTrigger value="backup" className="gap-2 rounded-none border-b-2 border-transparent data-active:border-primary data-active:bg-transparent data-active:shadow-none px-4 py-3">
               <Database className="w-4 h-4" />
@@ -212,169 +372,282 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="api" className="min-h-0 overflow-y-auto p-4 sm:p-6 space-y-4 mt-0">
-            <div className="flex items-start gap-2 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
-              <ShieldCheck className="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" />
-              <div className="text-xs text-emerald-700 dark:text-emerald-400">
-                <p className="font-medium">你的密钥安全</p>
-                <p className="mt-0.5">
-                  Nova 密钥会发送到本机后端用于创建任务，但只保存在后端内存中，不会写入数据库。
-                </p>
+          <TabsContent value="models" className="min-h-0 overflow-y-auto p-4 sm:p-6 mt-0 space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">动态模型注册表</p>
+                <p className="text-xs text-muted-foreground">图片模型支持自定义 URL、协议、显示名称、参考图上限、最高分辨率和 Image 2 额外参数开关。</p>
               </div>
+              <Button onClick={persistRegistry} className="gap-2">
+                <Save className="w-4 h-4" />
+                保存设置
+              </Button>
             </div>
 
-            {hasKey && !editing ? (
-              <div className="flex items-center gap-2 sm:gap-3">
-                <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap px-3 sm:px-4 py-1.5 bg-muted rounded text-sm font-mono">
-                  <span className="text-muted-foreground">KEY=</span>********************
-                </code>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button variant="ghost" size="icon" onClick={() => {
-                    setEditing(true);
-                    setApiKey(getStoredApiKey());
-                  }} title="修改 API 密钥">
-                    <PencilLine className="w-4 h-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" onClick={removeKey} title="删除 API 密钥" className="hover:text-destructive hover:bg-destructive/10">
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
+            {error && (
+              <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                {error}
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  <div className="relative min-w-0 flex-[1_1_220px]">
-                    <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input
-                      type={showKey ? 'text' : 'password'}
-                      value={apiKey}
-                      onChange={(e) => { setApiKey(e.target.value); setError(null); }}
-                      placeholder="粘贴你的 Nova API 密钥"
-                      autoComplete="off"
-                      className="pl-10 pr-10"
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveKey(); }}
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() => setShowKey(!showKey)}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2"
-                    >
-                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </Button>
-                  </div>
-                  <Button onClick={saveKey} disabled={!apiKey.trim()} className="flex-1 sm:flex-none">
-                    保存
-                  </Button>
-                  {hasKey && (
-                    <Button variant="outline" onClick={() => { setApiKey(''); setEditing(false); setShowKey(false); }} className="flex-1 sm:flex-none">
-                      取消
-                    </Button>
-                  )}
-                </div>
-                {error && <p className="text-sm text-destructive">{error}</p>}
+            )}
+            {success && (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400">
+                {success}
               </div>
             )}
 
-            {hasKey && (
-              <div className="space-y-3 pt-2 border-t">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-medium">模型可用性检查</p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCheckModels}
-                    disabled={checkingModels}
-                    className="gap-2"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${checkingModels ? 'animate-spin' : ''}`} />
-                    {checkingModels ? '检查中...' : '检查模型'}
-                  </Button>
+            <div className="grid gap-4 xl:grid-cols-2">
+              {(['google', 'openai'] as ProviderProtocol[]).map((protocol) => (
+                <div key={protocol} className="space-y-3 rounded-xl border p-4">
+                  <div className="flex items-center gap-2">
+                    <Key className="w-4 h-4 text-muted-foreground" />
+                    <h3 className="font-medium">{protocol === 'google' ? 'Google 提供商' : 'OpenAI 提供商'}</h3>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs text-muted-foreground">Base URL</label>
+                    <Input value={providers[protocol].baseUrl} onChange={(event) => handleProviderChange(protocol, { baseUrl: event.target.value })} />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs text-muted-foreground">API Key</label>
+                    <Input type="password" value={providers[protocol].apiKey} onChange={(event) => handleProviderChange(protocol, { apiKey: event.target.value })} />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl border p-4 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">图片模型</p>
+                  <p className="text-xs text-muted-foreground">移除内置锁定，只保留 Banana / Image 2 系列作为参考和默认保底。</p>
+                </div>
+                <Button variant="outline" size="sm" className="gap-2" onClick={handleAddImageModel}>
+                  <Plus className="w-4 h-4" />
+                  新增图片模型
+                </Button>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="space-y-2">
+                  {imageModels.map((model) => (
+                    <button
+                      key={model.id}
+                      type="button"
+                      onClick={() => setSelectedImageModelId(model.id)}
+                      className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${selectedImageModelId === model.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'}`}
+                    >
+                      <div className="font-medium">{model.name || '未命名模型'}</div>
+                      <div className="text-xs text-muted-foreground">{model.modelId || model.id}</div>
+                    </button>
+                  ))}
                 </div>
 
-                {modelCheckError && (
-                  <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg overflow-hidden">
-                    <XCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <p className="text-xs text-destructive break-all max-h-32 overflow-y-auto">{modelCheckError}</p>
+                {selectedImageModel && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">显示名称</label>
+                      <Input value={selectedImageModel.name} onChange={(event) => handleUpdateImageModel(selectedImageModel.id, { name: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">模型 ID</label>
+                      <Input value={selectedImageModel.modelId} onChange={(event) => handleUpdateImageModel(selectedImageModel.id, { modelId: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">协议</label>
+                      <Select
+                        value={selectedImageModel.protocol}
+                        onValueChange={(value) => handleUpdateImageModel(selectedImageModel.id, { protocol: value as ProviderProtocol })}
+                        options={[
+                          { value: 'google', label: 'Google' },
+                          { value: 'openai', label: 'OpenAI' },
+                        ]}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">保底参考模板</label>
+                      <Select
+                        value={selectedImageModel.builtinPreset}
+                        onValueChange={(value) => handleUpdateImageModel(selectedImageModel.id, { builtinPreset: value as ImageModelConfig['builtinPreset'] })}
+                        options={BUILTIN_IMAGE_PRESET_OPTIONS}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">最大参考图数量</label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={selectedImageModel.maxRefImages}
+                        onChange={(event) => handleUpdateImageModel(selectedImageModel.id, { maxRefImages: Number(event.target.value) || 1 })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">最大分辨率</label>
+                      <Select
+                        value={selectedImageModel.maxOutputSize}
+                        onValueChange={(value) => handleUpdateImageModel(selectedImageModel.id, { maxOutputSize: value as ImageModelConfig['maxOutputSize'] })}
+                        options={selectedImageOutputSizes.map((size) => ({ value: size, label: size === '512' ? '0.5K' : size }))}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border px-3 py-2 md:col-span-2">
+                      <div>
+                        <p className="text-sm font-medium">Image 2 额外参数</p>
+                        <p className="text-xs text-muted-foreground">透明度、质量、风格控件默认开启，用户可手动关闭。</p>
+                      </div>
+                      <Switch
+                        checked={selectedImageModel.supportsAdvancedParams}
+                        onCheckedChange={(checked) => handleUpdateImageModel(selectedImageModel.id, {
+                          supportsAdvancedParams: checked,
+                          advancedParamsEnabledByDefault: checked && selectedImageModel.advancedParamsEnabledByDefault,
+                        })}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border px-3 py-2 md:col-span-2">
+                      <div>
+                        <p className="text-sm font-medium">默认启用额外参数</p>
+                        <p className="text-xs text-muted-foreground">仅对支持额外参数的模型有效。</p>
+                      </div>
+                      <Switch
+                        checked={selectedImageModel.advancedParamsEnabledByDefault}
+                        disabled={!selectedImageModel.supportsAdvancedParams}
+                        onCheckedChange={(checked) => handleUpdateImageModel(selectedImageModel.id, { advancedParamsEnabledByDefault: checked })}
+                      />
+                    </div>
+                    <div className="md:col-span-2 flex justify-end">
+                      <Button variant="outline" size="sm" className="gap-2 text-destructive hover:text-destructive" onClick={() => handleDeleteImageModel(selectedImageModel.id)}>
+                        <Trash2 className="w-4 h-4" />
+                        删除模型
+                      </Button>
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
 
-                {modelStatuses && (() => {
-                  const imageIds = new Set(MODEL_OPTIONS.map(o => o.value as string));
-                  const tokenIds = new Set(TOKEN_MODEL_OPTIONS.map(o => o.value as string));
-                  const reverseIds = new Set(REVERSE_PROMPT_MODEL_OPTIONS.map(o => o.value as string));
-                  const imageStatuses = modelStatuses.filter(s => imageIds.has(s.modelId));
-                  const tokenStatuses = modelStatuses.filter(s => tokenIds.has(s.modelId));
-                  const reverseStatuses = modelStatuses.filter(s => reverseIds.has(s.modelId));
-                  const renderRow = (status: ModelStatus) => {
-                    const modelLabel =
-                      MODEL_OPTIONS.find(m => m.value === status.modelId)?.label
-                      || TOKEN_MODEL_OPTIONS.find(m => m.value === status.modelId)?.label
-                      || REVERSE_PROMPT_MODEL_OPTIONS.find(m => m.value === status.modelId)?.label
-                      || status.modelId;
-                    return (
-                      <div
-                        key={status.modelId}
-                        className="flex flex-wrap items-center justify-between gap-2 p-2 bg-muted/50 rounded-lg"
-                      >
-                        <div className="flex min-w-0 items-center gap-2">
-                          {status.available ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          ) : (
-                            <XCircle className="w-4 h-4 text-destructive" />
-                          )}
-                          <span className="min-w-0 break-all text-sm font-medium">{modelLabel}</span>
+            <div className="rounded-xl border p-4 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">文本模型</p>
+                  <p className="text-xs text-muted-foreground">反推提示词、Agent、提示词优化和图片描述统一从这里读取。</p>
+                </div>
+                <Button variant="outline" size="sm" className="gap-2" onClick={handleAddTextModel}>
+                  <Plus className="w-4 h-4" />
+                  新增文本模型
+                </Button>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="space-y-2">
+                  {textModels.map((model) => (
+                    <button
+                      key={model.id}
+                      type="button"
+                      onClick={() => setSelectedTextModelId(model.id)}
+                      className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${selectedTextModelId === model.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'}`}
+                    >
+                      <div className="font-medium">{model.name || '未命名模型'}</div>
+                      <div className="text-xs text-muted-foreground">{model.modelId || model.id}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {selectedTextModel && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">显示名称</label>
+                      <Input value={selectedTextModel.name} onChange={(event) => handleUpdateTextModel(selectedTextModel.id, { name: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">模型 ID</label>
+                      <Input value={selectedTextModel.modelId} onChange={(event) => handleUpdateTextModel(selectedTextModel.id, { modelId: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">协议</label>
+                      <Select
+                        value={selectedTextModel.protocol}
+                        onValueChange={(value) => handleUpdateTextModel(selectedTextModel.id, { protocol: value as ProviderProtocol })}
+                        options={[
+                          { value: 'google', label: 'Google' },
+                          { value: 'openai', label: 'OpenAI' },
+                        ]}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">备注</label>
+                      <Input value={selectedTextModel.note || ''} onChange={(event) => handleUpdateTextModel(selectedTextModel.id, { note: event.target.value })} />
+                    </div>
+                    <div className="md:col-span-2 flex justify-end">
+                      <Button variant="outline" size="sm" className="gap-2 text-destructive hover:text-destructive" onClick={() => handleDeleteTextModel(selectedTextModel.id)}>
+                        <Trash2 className="w-4 h-4" />
+                        删除模型
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border p-4 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">默认模型</p>
+                  <p className="text-xs text-muted-foreground">各工作流默认值都会从这里恢复。</p>
+                </div>
+                <Button variant="outline" size="sm" className="gap-2" onClick={handleCheckModels} disabled={checkingModels}>
+                  <RefreshCw className={`w-4 h-4 ${checkingModels ? 'animate-spin' : ''}`} />
+                  {checkingModels ? '检查中...' : '检查模型'}
+                </Button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">文生图默认模型</label>
+                  <Select value={defaults.textToImage} onValueChange={(value) => setDefaults((prev) => ({ ...prev, textToImage: value }))} options={imageModelOptions} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">图生图默认模型</label>
+                  <Select value={defaults.imageToImage} onValueChange={(value) => setDefaults((prev) => ({ ...prev, imageToImage: value }))} options={imageModelOptions} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">反推提示词默认模型</label>
+                  <Select value={defaults.reversePrompt} onValueChange={(value) => setDefaults((prev) => ({ ...prev, reversePrompt: value }))} options={textModelOptions} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">Agent 默认模型</label>
+                  <Select value={defaults.agent} onValueChange={(value) => setDefaults((prev) => ({ ...prev, agent: value }))} options={textModelOptions} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">提示词优化默认模型</label>
+                  <Select value={defaults.promptOptimize} onValueChange={(value) => setDefaults((prev) => ({ ...prev, promptOptimize: value }))} options={textModelOptions} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">图片描述默认模型</label>
+                  <Select value={defaults.imageDescribe} onValueChange={(value) => setDefaults((prev) => ({ ...prev, imageDescribe: value }))} options={textModelOptions} />
+                </div>
+              </div>
+
+              {modelCheckError && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                  {modelCheckError}
+                </div>
+              )}
+              {modelStatuses && (
+                <div className="grid gap-2 md:grid-cols-2">
+                  {modelStatuses.map((status) => (
+                    <div key={status.modelId} className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-sm">
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">
+                          {getImageModelLabel(imageModels, status.modelId) || getTextModelLabel(textModels, status.modelId)}
                         </div>
-                        <div className="text-xs text-muted-foreground">
-                          {status.available ? (
-                            <span className="text-emerald-600">√ 可用</span>
-                          ) : (
-                            <span className="text-destructive">不可用</span>
-                          )}
-                        </div>
+                        <div className="truncate text-xs text-muted-foreground">{status.actualName || status.modelId}</div>
                       </div>
-                    );
-                  };
-
-                  return (
-                    <div className="space-y-3">
-                      {imageStatuses.length > 0 && (
-                        <div className="space-y-2">
-                          <p className="text-xs font-medium text-muted-foreground">图像生成模型</p>
-                          <div className="space-y-2">
-                            {imageStatuses.map(renderRow)}
-                          </div>
-                        </div>
-                      )}
-                      {tokenStatuses.length > 0 && (
-                        <div className="space-y-2">
-                          <p className="text-xs font-medium text-muted-foreground">按量计费模型</p>
-                          <div className="space-y-2">
-                            {tokenStatuses.map(renderRow)}
-                          </div>
-                        </div>
-                      )}
-                      {reverseStatuses.length > 0 && (
-                        <div className="space-y-2">
-                          <p className="text-xs font-medium text-muted-foreground">反推提示词模型</p>
-                          <div className="space-y-2">
-                            {reverseStatuses.map(renderRow)}
-                          </div>
-                        </div>
+                      {status.available ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      ) : (
+                        <XCircle className="w-4 h-4 text-destructive" />
                       )}
                     </div>
-                  );
-                })()}
-              </div>
-            )}
-
-            <div className="text-sm text-muted-foreground space-y-2">
-              <p>
-                请在「提供商」标签页中配置 Google 或 OpenAI 的 API Key 和 Base URL。
-              </p>
+                  ))}
+                </div>
+              )}
             </div>
           </TabsContent>
 
@@ -382,48 +655,32 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
             <div className="space-y-4">
               <div className="space-y-2">
                 <h3 className="text-base font-medium">数据备份与恢复</h3>
-                <p className="text-sm text-muted-foreground">
-                  导出所有数据（API 密钥、任务历史、设置、图片）为 ZIP 压缩包，或从备份文件恢复数据。
-                </p>
+                <p className="text-sm text-muted-foreground">导出所有数据（提供商配置、模型注册表、任务历史、设置、图片）为 ZIP 压缩包，或从备份文件恢复数据。</p>
               </div>
 
-              {/* 进度条和警告 */}
-              <BackupProgress
-                percent={backupProgress.percent}
-                message={backupProgress.message}
-                isActive={isBackupActive}
-              />
+              <BackupProgress percent={backupProgress.percent} message={backupProgress.message} isActive={isBackupActive} />
 
-              {/* 成功提示 */}
               {backupSuccess && !isBackupActive && (
-                <div className="flex items-start gap-3 p-4 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-500 flex-shrink-0 mt-0.5" />
+                <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-950/30">
+                  <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-600 dark:text-emerald-500 mt-0.5" />
                   <p className="text-sm text-emerald-900 dark:text-emerald-100">{backupSuccess}</p>
                 </div>
               )}
 
-              {/* 错误提示 */}
               {backupError && !isBackupActive && (
-                <div className="flex items-start gap-3 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
+                <div className="flex items-start gap-3 rounded-lg border border-destructive/20 bg-destructive/10 p-4">
                   <XCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
                   <p className="text-sm text-destructive break-all">{backupError}</p>
                 </div>
               )}
 
-              {/* 导出区域 */}
-              <div className="space-y-3 p-4 border rounded-lg">
+              <div className="space-y-3 rounded-lg border p-4">
                 <div className="flex items-start gap-3">
                   <Download className="w-5 h-5 text-muted-foreground mt-0.5" />
                   <div className="flex-1 space-y-2">
                     <h4 className="font-medium">导出数据</h4>
-                    <p className="text-sm text-muted-foreground">
-                      将所有数据打包为 ZIP 文件下载到本地。备份文件包含敏感信息（API 密钥），请妥善保管。
-                    </p>
-                    <Button
-                      onClick={handleExport}
-                      disabled={isBackupActive}
-                      className="gap-2"
-                    >
+                    <p className="text-sm text-muted-foreground">将所有数据打包为 ZIP 文件下载到本地。备份文件包含敏感信息，请妥善保管。</p>
+                    <Button onClick={handleExport} disabled={isBackupActive} className="gap-2">
                       <Download className="w-4 h-4" />
                       全量备份
                     </Button>
@@ -431,44 +688,19 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                 </div>
               </div>
 
-              {/* 导入区域 */}
-              <div className="space-y-3 p-4 border rounded-lg">
+              <div className="space-y-3 rounded-lg border p-4">
                 <div className="flex items-start gap-3">
                   <Upload className="w-5 h-5 text-muted-foreground mt-0.5" />
                   <div className="flex-1 space-y-2">
                     <h4 className="font-medium">导入数据</h4>
-                    <p className="text-sm text-muted-foreground">
-                      从备份文件恢复数据。<span className="font-medium text-destructive">警告：这将覆盖所有现有数据！</span>
-                    </p>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".zip"
-                      onChange={handleFileSelect}
-                      className="hidden"
-                    />
-                    <Button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={isBackupActive}
-                      variant="outline"
-                      className="gap-2"
-                    >
+                    <p className="text-sm text-muted-foreground">从备份文件恢复数据。<span className="font-medium text-destructive">警告：这会覆盖现有数据。</span></p>
+                    <input ref={fileInputRef} type="file" accept=".zip" onChange={handleFileSelect} className="hidden" />
+                    <Button onClick={() => fileInputRef.current?.click()} disabled={isBackupActive} variant="outline" className="gap-2">
                       <Upload className="w-4 h-4" />
                       选择备份文件
                     </Button>
                   </div>
                 </div>
-              </div>
-
-              {/* 注意事项 */}
-              <div className="text-xs text-muted-foreground space-y-1 p-3 bg-muted/50 rounded-lg">
-                <p className="font-medium">注意事项：</p>
-                <ul className="list-disc list-inside space-y-1 ml-2">
-                  <li>导出和导入过程中请勿关闭或刷新页面</li>
-                  <li>备份文件包含 API 密钥等敏感信息，请勿分享给他人</li>
-                  <li>导入数据会完全覆盖现有数据，建议先导出当前数据作为备份</li>
-                  <li>导入完成后页面会自动刷新以应用更改</li>
-                </ul>
               </div>
             </div>
           </TabsContent>
@@ -477,21 +709,19 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
             <div className="space-y-4 text-sm">
               <h3 className="text-lg font-medium">Nova Image <span className="text-xs text-muted-foreground font-normal">v{process.env.NEXT_PUBLIC_APP_VERSION}</span></h3>
 
-              <details className="group p-3 bg-muted/50 rounded-lg">
+              <details className="group rounded-lg bg-muted/50 p-3">
                 <summary className="flex cursor-pointer select-none items-center gap-2 font-medium">
                   <span className="text-[10px] opacity-60 transition-transform group-open:rotate-90">▶</span>
                   使用方法
                 </summary>
                 <ol className="mt-3 list-decimal list-inside space-y-2 text-muted-foreground">
-                  <li>
-                    在「提供商」标签页中配置 API Key 和 Base URL
-                  </li>
-                  <li>粘贴到上方 API 密钥配置处</li>
-                  <li>选择文生图或图生图模式并开始生成</li>
+                  <li>在「模型与提供商」标签页配置 Google / OpenAI 的 URL 与 API Key。</li>
+                  <li>在图片模型管理里添加或调整你自己的模型。</li>
+                  <li>设置各工作流默认模型后，即可开始生图、反推或 Agent 工作流。</li>
                 </ol>
               </details>
 
-              <details className="group p-3 bg-muted/50 rounded-lg">
+              <details className="group rounded-lg bg-muted/50 p-3">
                 <summary className="flex cursor-pointer select-none items-center gap-2 font-medium">
                   <span className="text-[10px] opacity-60 transition-transform group-open:rotate-90">▶</span>
                   数据来源
@@ -502,12 +732,7 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                     <ul className="mt-1 ml-5 list-disc list-inside space-y-1">
                       {PROMPT_DATA_SOURCES.map((source) => (
                         <li key={source.name}>
-                          <a
-                            href={source.sourceUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-primary hover:underline"
-                          >
+                          <a href={source.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
                             {getPromptSourceLabel(source.sourceUrl)} <ExternalLink className="w-3 h-3" />
                           </a>
                         </li>
@@ -516,68 +741,14 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                   </li>
                   <li>
                     <span className="text-foreground">随机图片 · BA人物</span> -{' '}
-                    <a
-                      href={BA_RANDOM_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-primary hover:underline"
-                    >
+                    <a href={BA_RANDOM_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
                       img.catcdn.cn <ExternalLink className="w-3 h-3" />
                     </a>
                   </li>
                   <li>
                     <span className="text-foreground">随机图片 · Bing壁纸</span> -{' '}
-                    <a
-                      href={BING_WALLPAPER_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-primary hover:underline"
-                    >
+                    <a href={BING_WALLPAPER_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
                       bing.img.run <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                </ul>
-              </details>
-
-              <details className="group p-3 bg-muted/50 rounded-lg">
-                <summary className="flex cursor-pointer select-none items-center gap-2 font-medium">
-                  <span className="text-[10px] opacity-60 transition-transform group-open:rotate-90">▶</span>
-                  隐私条款
-                </summary>
-                <ul className="mt-3 list-disc list-inside space-y-2 text-muted-foreground">
-                  <li>本站为本地优先应用：API 密钥、任务历史、设置与生成图片均仅保存在你的浏览器本地，不会上传到第三方服务器。</li>
-                  <li>API 密钥仅发送至本机后端用于创建生成任务，且只保存在后端内存中，不写入数据库。</li>
-                  <li>生成图片时，提示词与参考图会发送至 Nova API 完成生成；除此之外不收集任何个人信息。</li>
-                </ul>
-              </details>
-
-              <details className="group p-3 bg-muted/50 rounded-lg">
-                <summary className="flex cursor-pointer select-none items-center gap-2 font-medium">
-                  <span className="text-[10px] opacity-60 transition-transform group-open:rotate-90">▶</span>
-                  参考项目
-                </summary>
-                <ul className="mt-3 list-disc list-inside space-y-2 text-muted-foreground">
-                  <li>
-                    基于{' '}
-                    <a
-                      href="https://github.com/aaronkwhite/nanobanana-studio-web"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-primary hover:underline"
-                    >
-                      aaronkwhite/nanobanana-studio-web <ExternalLink className="w-3 h-3" />
-                    </a>
-                    {' '}修改而来
-                  </li>
-                  <li>
-                    参考{' '}
-                    <a
-                      href="https://github.com/basketikun/infinite-canvas"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-primary hover:underline"
-                    >
-                      basketikun/infinite-canvas <ExternalLink className="w-3 h-3" />
                     </a>
                   </li>
                 </ul>

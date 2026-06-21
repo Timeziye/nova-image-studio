@@ -27,7 +27,7 @@ import {
   DEFAULT_REVERSE_MODE,
   DEFAULT_REVERSE_MODEL,
   REVERSE_PROMPT_MODE_OPTIONS,
-  REVERSE_PROMPT_MODEL_OPTIONS,
+  getReversePromptModelOptionsList,
   getReverseModelOption,
   getReverseModeOption,
   isReversePromptMode,
@@ -376,6 +376,7 @@ export function ReversePromptForm({ wideMode = false, disabled = false, onConfig
   };
 
   const canSubmit = !!pendingFile && !disabled && !uploading && !streaming;
+  const reverseModelOptions = getReversePromptModelOptionsList();
   const modelLabel = getReverseModelOption(model).label;
   const modeOption = getReverseModeOption(mode);
 
@@ -462,7 +463,7 @@ export function ReversePromptForm({ wideMode = false, disabled = false, onConfig
                   <span className="shrink-0 truncate text-[11px]">{modelLabel}</span>
                 </PopoverTrigger>
                 <PopoverContent className="w-48 p-1" align="start">
-                  {REVERSE_PROMPT_MODEL_OPTIONS.map((option) => (
+                  {reverseModelOptions.map((option) => (
                     <button
                       key={option.value}
                       onClick={() => {

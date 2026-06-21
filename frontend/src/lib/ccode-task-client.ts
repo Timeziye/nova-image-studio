@@ -1,8 +1,8 @@
 import type { AspectRatio, OutputSize } from '@/lib/gemini-config';
-import { MODEL_OPTIONS, TOKEN_MODEL_OPTIONS } from '@/lib/gemini-config';
+import { getModelOptions } from '@/lib/gemini-config';
 import type { GptImageBackground, GptImageQuality, GptImageStyle } from '@/lib/model-capabilities';
-import type { ProviderProtocol } from '@/lib/nova-models';
-import { REVERSE_PROMPT_MODEL_OPTIONS } from '@/lib/reverse-prompt-config';
+import { loadRegistry, type ProviderProtocol } from '@/lib/nova-models';
+import { getReversePromptModelOptionsList } from '@/lib/reverse-prompt-config';
 
 export interface ImageReference {
   data: string;
@@ -240,9 +240,8 @@ export async function checkModelsAvailability(
     const idsToCheck: string[] = targetModelIds && targetModelIds.length > 0
       ? targetModelIds
       : [
-          ...MODEL_OPTIONS.map(({ value }) => value),
-          ...TOKEN_MODEL_OPTIONS.map(({ value }) => value),
-          ...REVERSE_PROMPT_MODEL_OPTIONS.map(({ value }) => value),
+          ...getModelOptions().map(({ value }) => value),
+          ...getReversePromptModelOptionsList().map(({ value }) => value),
         ];
 
     return idsToCheck.map((modelId) => {
@@ -256,6 +255,44 @@ export async function checkModelsAvailability(
   } catch (error) {
     throw normalizeModelCheckError(error);
   }
+}
+
+export function resolveImageTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: ProviderProtocol } {
+  const registry = loadRegistry();
+  const model = registry.imageModels.find((item) => item.id === modelId);
+  if (!model) {
+    return {
+      apiKey: registry.providers.openai.apiKey,
+      baseUrl: registry.providers.openai.baseUrl,
+      protocol: 'openai',
+    };
+  }
+
+  const provider = registry.providers[model.protocol];
+  return {
+    apiKey: provider.apiKey,
+    baseUrl: provider.baseUrl,
+    protocol: model.protocol,
+  };
+}
+
+export function resolveTextTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: ProviderProtocol } {
+  const registry = loadRegistry();
+  const model = registry.textModels.find((item) => item.id === modelId);
+  if (!model) {
+    return {
+      apiKey: registry.providers.openai.apiKey,
+      baseUrl: registry.providers.openai.baseUrl,
+      protocol: 'openai',
+    };
+  }
+
+  const provider = registry.providers[model.protocol];
+  return {
+    apiKey: provider.apiKey,
+    baseUrl: provider.baseUrl,
+    protocol: model.protocol,
+  };
 }
 
 export async function getNovaTask(taskId: string): Promise<NovaTaskResponse> {

@@ -16,7 +16,6 @@ import { cn } from '@/lib/utils';
 import {
   MODEL_OPTIONS,
   MODEL_IMAGE_LIMITS,
-  supportsTokenMode,
   type ModelId,
 } from '@/lib/gemini-config';
 import type { AspectRatio, OutputSize } from '@/lib/job-store';
@@ -58,9 +57,7 @@ interface AgentProposalCardProps {
   imageModel: ModelId;
   busy?: boolean;
   hideControls?: boolean;
-  useTokenMode?: boolean;
   onModelChange: (model: ModelId) => void;
-  onUseTokenModeChange?: (next: boolean) => void;
   onApprove: (prompt: string, selectedImageIds: string[], model: ModelId, params: AgentApproveParams) => void;
   onCancel: () => void;
 }
@@ -73,9 +70,7 @@ export function AgentProposalCard({
   imageModel,
   busy = false,
   hideControls = false,
-  useTokenMode = false,
   onModelChange,
-  onUseTokenModeChange,
   onApprove,
   onCancel,
 }: AgentProposalCardProps) {
@@ -153,7 +148,6 @@ export function AgentProposalCard({
   }, [firstRefDims, initializedWithRef, imageModel, proposal]);
 
   const modelLabel = MODEL_OPTIONS.find(o => o.value === imageModel)?.label || imageModel;
-  const tokenToggleEnabled = Boolean(onUseTokenModeChange);
 
   const effectiveMode = selectedIds.length > 0 ? 'edit' : 'generate';
   const overLimit = selectedIds.length > maxRefs;
@@ -193,8 +187,6 @@ export function AgentProposalCard({
 
   const handleModelChange = (next: ModelId) => {
     onModelChange(next);
-    // 切换模型时重置按量付费，避免给不支持 token 的模型误加 -tokens 后缀
-    onUseTokenModeChange?.(false);
     // 重新合法化当前布局：档位 snap、比例 snap、自定义尺寸按支持情况保留/清除
     setLayout(prev => {
       const validSizes = getValidOutputSizes(next);
@@ -367,56 +359,25 @@ export function AgentProposalCard({
             className={cn(buttonVariants({ variant: 'outline', size: 'xs' }), 'gap-1')}
           >
             <ImagePlus className="h-3 w-3" />
-            <span className="shrink-0 truncate text-[11px]">{modelLabel}{useTokenMode ? '（按量计费）' : ''}</span>
+            <span className="shrink-0 truncate text-[11px]">{modelLabel}</span>
           </PopoverTrigger>
           <PopoverContent className="w-48 p-1" align="start">
-            {MODEL_OPTIONS.map(option => {
-              const isTokenCapable = tokenToggleEnabled && supportsTokenMode(option.value);
-              const isTokenActive = useTokenMode && imageModel === option.value;
-              const isSelected = imageModel === option.value;
-              return (
-                <div
-                  key={option.value}
-                  className={cn(
-                    'flex items-center justify-between rounded-md text-sm hover:bg-muted',
-                    isSelected && 'bg-muted font-medium'
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleModelChange(option.value);
-                      setModelPopoverOpen(false);
-                    }}
-                    className="flex-1 text-left px-2.5 py-1.5"
-                  >
-                    {option.label}
-                  </button>
-                  {isTokenCapable && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!isSelected) handleModelChange(option.value);
-                        onUseTokenModeChange?.(!useTokenMode);
-                      }}
-                      className="mr-1 shrink-0"
-                      title={isTokenActive ? '关闭按量付费' : '开启按量付费'}
-                    >
-                      <span className={cn(
-                        'relative inline-flex h-4 w-7 items-center rounded-[4px] border transition-colors',
-                        isTokenActive ? 'border-primary bg-primary' : 'border-input bg-muted'
-                      )}>
-                        <span className={cn(
-                          'pointer-events-none block h-3 w-3 rounded-[2px] shadow-sm transition-transform',
-                          isTokenActive ? 'translate-x-3.5 bg-primary-foreground' : 'translate-x-0.5 bg-muted-foreground/40'
-                        )} />
-                      </span>
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+            {MODEL_OPTIONS.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  handleModelChange(option.value);
+                  setModelPopoverOpen(false);
+                }}
+                className={cn(
+                  'w-full text-left px-2.5 py-1.5 rounded-md text-sm hover:bg-muted',
+                  imageModel === option.value && 'bg-muted font-medium'
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
           </PopoverContent>
         </Popover>
 

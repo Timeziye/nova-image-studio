@@ -22,7 +22,6 @@ import {
 } from '@/lib/gif-job-store';
 import type { RefImageData } from '@/lib/job-store';
 import { supportsGptImageAdvancedParams, type GptImageAdvancedParams } from '@/lib/model-capabilities';
-import { supportsTokenMode } from '@/lib/gemini-config';
 
 export interface GifUploadedRef extends RefImageData {
   preview: string;
@@ -36,8 +35,6 @@ export interface GifParametersPanelProps {
   modelPopoverOpen: boolean;
   onModelPopoverOpenChange: (open: boolean) => void;
   onModelChange: (value: GifModel) => void;
-  useTokenMode: boolean;
-  onUseTokenModeChange: (value: boolean) => void;
   gptImageAdvancedParams: GptImageAdvancedParams;
   onGptImageAdvancedParamsChange: (value: GptImageAdvancedParams) => void;
   closedLoop: boolean;
@@ -158,60 +155,25 @@ export function GifParametersPanel(props: GifParametersPanelProps) {
               title="模型"
             >
               <Sparkles className="h-3 w-3" />
-              <span className="shrink-0 truncate text-[11px]">{formatModelLabel(props.model)}{props.useTokenMode ? '（按量计费）' : ''}</span>
+              <span className="shrink-0 truncate text-[11px]">{formatModelLabel(props.model)}</span>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
-              {GIF_MODEL_OPTIONS.map(option => {
-                const isTokenCapable = supportsTokenMode(option.value);
-                const isTokenActive = props.useTokenMode && props.model === option.value;
-                const isSelected = props.model === option.value;
-                return (
-                  <div
-                    key={option.value}
-                    className={cn(
-                      'flex items-center justify-between rounded-md text-sm hover:bg-muted',
-                      isSelected && 'bg-muted font-medium',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        props.onModelChange(option.value);
-                        props.onModelPopoverOpenChange(false);
-                      }}
-                      className="flex-1 text-left px-2.5 py-1.5"
-                    >
-                      {option.label}
-                    </button>
-                        {isTokenCapable && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (!isSelected) props.onModelChange(option.value);
-                              props.onUseTokenModeChange(!props.useTokenMode);
-                            }}
-                            className="mr-1 shrink-0"
-                            title={isTokenActive ? '关闭按量付费' : '开启按量付费'}
-                          >
-                            <span className={cn(
-                              'relative inline-flex h-4 w-7 items-center rounded-[4px] border transition-colors',
-                              isTokenActive
-                                ? 'border-primary bg-primary'
-                                : 'border-input bg-muted',
-                            )}>
-                              <span className={cn(
-                                'pointer-events-none block h-3 w-3 rounded-[2px] shadow-sm transition-transform',
-                                isTokenActive
-                                  ? 'translate-x-3.5 bg-primary-foreground'
-                                  : 'translate-x-0.5 bg-muted-foreground/40',
-                              )} />
-                            </span>
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
+              {GIF_MODEL_OPTIONS.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    props.onModelChange(option.value);
+                    props.onModelPopoverOpenChange(false);
+                  }}
+                  className={cn(
+                    'w-full text-left px-2.5 py-1.5 rounded-md text-sm hover:bg-muted',
+                    props.model === option.value && 'bg-muted font-medium',
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
                 <p className="text-[11px] text-muted-foreground px-2.5 py-1">仅支持 4K 模型</p>
             </PopoverContent>
           </Popover>

@@ -77,8 +77,6 @@ export function CanvasConfigNodePanel({
         <GenerationParamsBar
           value={value}
           onChange={handleParamsChange}
-          useTokenMode={config.useTokenMode ?? false}
-          onUseTokenModeChange={(next) => onConfigChange({ useTokenMode: next })}
           size="xs"
         />
         <div className="flex items-center gap-1.5">

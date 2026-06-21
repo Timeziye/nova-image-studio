@@ -59,7 +59,6 @@ interface PersistedSettings {
   gptImageQuality: GptImageQuality;
   gptImageStyle: GptImageStyle;
   gptImageBackground: GptImageBackground;
-  useTokenMode: boolean;
 }
 
 export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigureApiKey, onError, showToast }: GifGenerationWorkspaceProps) {
@@ -67,7 +66,6 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
 
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState<GifModel>('gpt-image-2-plus');
-  const [useTokenMode, setUseTokenMode] = useState(false);
   const [gptImageAdvancedParams, setGptImageAdvancedParams] = useState<GptImageAdvancedParams>(DEFAULT_GPT_IMAGE_ADVANCED_PARAMS);
   const [loop, setLoop] = useState(true);
   const [closedLoop, setClosedLoop] = useState(false);
@@ -170,7 +168,6 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
       if (typeof saved.framePadding === 'number' && saved.framePadding >= 0 && saved.framePadding <= GIF_MAX_FRAME_PADDING) {
         setFramePadding(saved.framePadding);
       }
-      setUseTokenMode(saved.useTokenMode ?? false);
       setSettingsReady(true);
     });
 
@@ -191,9 +188,8 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
       gptImageQuality: gptImageAdvancedParams.quality,
       gptImageStyle: gptImageAdvancedParams.style,
       gptImageBackground: gptImageAdvancedParams.background,
-      useTokenMode,
     });
-  }, [model, loop, closedLoop, frameDelayMs, loopCount, framePadding, gptImageAdvancedParams, useTokenMode, settingsReady]);
+  }, [model, loop, closedLoop, frameDelayMs, loopCount, framePadding, gptImageAdvancedParams, settingsReady]);
 
   useEffect(() => {
     if (!workflow.startedAt || (workflow.job?.status !== 'generating_grid' && workflow.job?.status !== 'generating_gif')) {
@@ -306,7 +302,6 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
 
   const handleModelChange = useCallback((value: GifModel) => {
     setModel(value);
-    setUseTokenMode(false);
     setGptImageAdvancedParams(prev => getGptImageAdvancedParamsForModel(value, prev));
   }, []);
 
@@ -314,7 +309,7 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
     prompt,
     loop,
     closedLoop,
-    model: useTokenMode ? `${model}-tokens` : model,
+    model,
     gptImageQuality: gptImageAdvancedParams.quality,
     gptImageStyle: gptImageAdvancedParams.style,
     gptImageBackground: gptImageAdvancedParams.background,
@@ -327,7 +322,7 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
     frameDelayMs,
     loopCount,
     framePadding,
-  }), [prompt, loop, closedLoop, model, useTokenMode, gptImageAdvancedParams, refFiles, frameDelayMs, loopCount, framePadding]);
+  }), [prompt, loop, closedLoop, model, gptImageAdvancedParams, refFiles, frameDelayMs, loopCount, framePadding]);
 
   const performSubmit = useCallback(async () => {
     if (!hasApiKey) {
@@ -447,8 +442,6 @@ export function GifGenerationWorkspace({ wideMode = false, hasApiKey, onConfigur
           modelPopoverOpen={modelPopoverOpen}
           onModelPopoverOpenChange={setModelPopoverOpen}
           onModelChange={handleModelChange}
-          useTokenMode={useTokenMode}
-          onUseTokenModeChange={setUseTokenMode}
           gptImageAdvancedParams={gptImageAdvancedParams}
           onGptImageAdvancedParamsChange={value => {
             setGptImageAdvancedParams(getGptImageAdvancedParamsForModel(model, value));

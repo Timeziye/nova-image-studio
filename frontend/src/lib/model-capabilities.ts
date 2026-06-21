@@ -1,11 +1,14 @@
 import {
-  MODEL_IMAGE_LIMITS,
-  MODEL_OPTIONS,
+  getBuiltinPreset,
+  getDefaultModelId,
+  getModelImageLimits,
+  getModelOptions,
   isGptImageModel,
   isTokenModel,
   supportsTokenMode,
   type ModelId,
 } from '@/lib/gemini-config';
+import { getImageModelById, loadRegistry } from '@/lib/nova-models';
 import type { AspectRatio, OutputSize, RefImageData, StoredJob } from '@/lib/job-store';
 
 export type ParallelCount = 1 | 2 | 3 | 4;
@@ -26,6 +29,14 @@ export const DEFAULT_GPT_IMAGE_ADVANCED_PARAMS: GptImageAdvancedParams = {
   style: 'auto',
   background: 'auto',
 };
+
+function getModelConfig(modelId: string) {
+  return getImageModelById(loadRegistry(), modelId);
+}
+
+function getBuiltinPresetId(modelId: string): string {
+  return getModelConfig(modelId)?.builtinPreset || modelId;
+}
 
 export const GPT_IMAGE_QUALITY_OPTIONS: { value: GptImageQuality; label: string }[] = [
   { value: 'auto', label: '自动' },
@@ -210,21 +221,27 @@ export function normalizeCustomImageSize(size?: string, maxSide?: number): strin
 }
 
 export function getCustomSizeMaxSide(model: ModelId): number | undefined {
-  if (model === 'gpt-image-2-plus') return 3840;
-  if (model === 'gpt-image-2-pro') return 3840;
+  const presetId = getBuiltinPresetId(model);
+  if (presetId === 'gpt-image-2-plus') return 3840;
+  if (presetId === 'gpt-image-2-pro') return 3840;
   return undefined;
 }
 
 export function supportsCustomSize(model: ModelId): boolean {
-  return model === 'gpt-image-2-plus' || model === 'gpt-image-2-pro';
+  const presetId = getBuiltinPresetId(model);
+  return presetId === 'gpt-image-2-plus' || presetId === 'gpt-image-2-pro';
 }
 
 export function supportsAutoLayout(model: ModelId): boolean {
-  return model === 'gpt-image-2' || model === 'gpt-image-2-fast' || model === 'gpt-image-2-plus' || model === 'gpt-image-2-pro';
+  const presetId = getBuiltinPresetId(model);
+  return presetId === 'gpt-image-2' || presetId === 'gpt-image-2-fast' || presetId === 'gpt-image-2-plus' || presetId === 'gpt-image-2-pro';
 }
 
 export function supportsGptImageAdvancedParams(model: string): boolean {
-  return model === 'gpt-image-2-fast' || model === 'gpt-image-2-plus';
+  const modelConfig = getModelConfig(model);
+  if (modelConfig) return modelConfig.supportsAdvancedParams;
+  const presetId = getBuiltinPresetId(model);
+  return presetId === 'gpt-image-2-fast' || presetId === 'gpt-image-2-plus';
 }
 
 export function normalizeGptImageQuality(value?: string): GptImageQuality {
@@ -261,26 +278,29 @@ export function getGptImageAdvancedParamsForModel(
 }
 
 export function getSizeOptions(model: ModelId): { value: OutputSize; label: string }[] {
-  if (model === 'gemini-2.5-flash-image' || model === 'gpt-image-2' || model === 'gpt-image-2-fast') {
-    return [{ value: '1K', label: '1K' }];
+  const modelConfig = getModelConfig(model);
+  if (modelConfig) {
+    const values: OutputSize[] = modelConfig.maxOutputSize === '4K'
+      ? (modelConfig.builtinPreset === 'gemini-3.1-flash-image-preview' ? ['512', '1K', '2K', '4K'] : ['1K', '2K', '4K'])
+      : modelConfig.maxOutputSize === '2K'
+        ? (modelConfig.builtinPreset === 'gemini-3.1-flash-image-preview' ? ['512', '1K', '2K'] : ['1K', '2K'])
+        : modelConfig.maxOutputSize === '512'
+          ? ['512']
+          : (modelConfig.builtinPreset === 'gemini-3.1-flash-image-preview' ? ['512', '1K'] : ['1K']);
+    return values.map((value) => ({ value, label: value === '512' ? '0.5K' : value }));
   }
-  if (model === 'gpt-image-2-plus') {
-    return [
-      { value: '1K', label: '1K' },
-      { value: '2K', label: '2K' },
-      { value: '4K', label: '4K' },
-    ];
-  }
-  if (model === 'gemini-3-pro-image-preview' || model === 'gpt-image-2-pro') {
-    return [
-      { value: '1K', label: '1K' },
-      { value: '2K', label: '2K' },
-      { value: '4K', label: '4K' },
-    ];
-  }
-  if (model === 'gemini-3.1-flash-image-preview') {
+
+  const presetId = getBuiltinPresetId(model);
+  if (presetId === 'gemini-3.1-flash-image-preview') {
     return [
       { value: '512', label: '0.5K' },
+      { value: '1K', label: '1K' },
+      { value: '2K', label: '2K' },
+      { value: '4K', label: '4K' },
+    ];
+  }
+  if (presetId === 'gemini-3-pro-image-preview' || presetId === 'gpt-image-2-plus' || presetId === 'gpt-image-2-pro') {
+    return [
       { value: '1K', label: '1K' },
       { value: '2K', label: '2K' },
       { value: '4K', label: '4K' },
@@ -304,34 +324,36 @@ export function getAspectRatioOptions(model: ModelId, outputSize: OutputSize): A
     return [{ value: 'auto', label: '自动', resolution: '自动' }];
   }
 
-  if (model === 'gemini-2.5-flash-image') {
+  const presetId = getBuiltinPresetId(model);
+
+  if (presetId === 'gemini-2.5-flash-image') {
     return BANANA_ASPECT_RATIOS;
   }
-  if (model === 'gemini-3-pro-image-preview') {
+  if (presetId === 'gemini-3-pro-image-preview') {
     return BANANA_PRO_ASPECT_RATIOS.map(ar => ({
       value: ar.value,
       label: ar.label,
       resolution: ar.resolutions[outputSize] || ar.resolutions['1K'],
     }));
   }
-  if (model === 'gpt-image-2-plus') {
+  if (presetId === 'gpt-image-2-plus') {
     return GPT_IMAGE_ASPECT_RATIOS.map(ar => ({
       value: ar.value,
       label: ar.label,
       resolution: getGptImageResolution(outputSize, ar.value) || '',
     })).filter(option => isGptImage2ProResolutionSupported(option.resolution));
   }
-  if (model === 'gpt-image-2-pro') {
+  if (presetId === 'gpt-image-2-pro') {
     return GPT_IMAGE_ASPECT_RATIOS.map(ar => ({
       value: ar.value,
       label: ar.label,
       resolution: getGptImageResolution(outputSize, ar.value) || '',
     })).filter(option => isGptImage2ProResolutionSupported(option.resolution));
   }
-  if (model === 'gpt-image-2' || model === 'gpt-image-2-fast') {
+  if (presetId === 'gpt-image-2' || presetId === 'gpt-image-2-fast') {
     return BANANA_ASPECT_RATIOS.map(ar => ({ ...ar, resolution: '' }));
   }
-  if (model === 'gemini-3.1-flash-image-preview') {
+  if (presetId === 'gemini-3.1-flash-image-preview') {
     return BANANA2_ASPECT_RATIOS.map(ar => ({
       value: ar.value,
       label: ar.label,
@@ -370,15 +392,16 @@ export function detectClosestAspectRatio(width: number, height: number, options:
 
 export function getModelDisplayName(model: string): string {
   const base = model.endsWith('-tokens') ? model.slice(0, -7) : model;
-  return MODEL_OPTIONS.find(option => option.value === base)?.label || model;
+  return getModelOptions().find(option => option.value === base)?.label || getModelConfig(base)?.name || model;
 }
 
 export function normalizeModel(candidate?: string): ModelId {
-  if (!candidate) return 'gemini-3-pro-image-preview';
+  const fallback = getDefaultModelId();
+  if (!candidate) return fallback;
   const base = candidate.endsWith('-tokens') ? candidate.slice(0, -7) : candidate;
-  return MODEL_OPTIONS.some(option => option.value === base)
+  return getModelOptions().some(option => option.value === base)
     ? base as ModelId
-    : 'gemini-3-pro-image-preview';
+    : fallback;
 }
 
 export function getDefaultRetryLayout(model: ModelId): { outputSize: OutputSize; aspectRatio: AspectRatio } {
@@ -388,29 +411,30 @@ export function getDefaultRetryLayout(model: ModelId): { outputSize: OutputSize;
 }
 
 export function isRetryLayoutCompatible(model: ModelId, outputSize: OutputSize, aspectRatio: AspectRatio): boolean {
+  const presetId = getBuiltinPresetId(model);
   if (outputSize === 'auto' || aspectRatio === 'auto') {
     return supportsAutoLayout(model) && outputSize === 'auto' && aspectRatio === 'auto';
   }
 
-  if (model === 'gemini-2.5-flash-image' || model === 'gpt-image-2' || model === 'gpt-image-2-fast') {
+  if (presetId === 'gemini-2.5-flash-image' || presetId === 'gpt-image-2' || presetId === 'gpt-image-2-fast') {
     return outputSize === '1K';
   }
 
-  if (model === 'gemini-3-pro-image-preview') {
+  if (presetId === 'gemini-3-pro-image-preview') {
     return ['1K', '2K', '4K'].includes(outputSize);
   }
 
-  if (model === 'gpt-image-2-plus') {
+  if (presetId === 'gpt-image-2-plus') {
     const resolution = getGptImageResolution(outputSize, aspectRatio);
     return ['1K', '2K', '4K'].includes(outputSize) && isGptImage2ProResolutionSupported(resolution);
   }
 
-  if (model === 'gpt-image-2-pro') {
+  if (presetId === 'gpt-image-2-pro') {
     const resolution = getGptImageResolution(outputSize, aspectRatio);
     return ['1K', '2K', '4K'].includes(outputSize) && isGptImage2ProResolutionSupported(resolution);
   }
 
-  if (model === 'gemini-3.1-flash-image-preview') {
+  if (presetId === 'gemini-3.1-flash-image-preview') {
     return ['512', '1K', '2K', '4K'].includes(outputSize);
   }
 
@@ -421,9 +445,10 @@ export function getCompatibleRetryData(job: StoredJob): RetryData {
   const baseJobModel = normalizeModel(job.model);
   const modelCompatible = baseJobModel === (job.model.endsWith('-tokens') ? job.model.slice(0, -7) : job.model);
   const model = baseJobModel;
-  const useTokenMode = isTokenModel(job.model) && supportsTokenMode(model);
+  const useTokenMode = false;
   const supportsTemperature = !isGptImageModel(model);
-  const maxRefs = MODEL_IMAGE_LIMITS[model].max;
+  const modelLimits = getModelImageLimits();
+  const maxRefs = modelLimits[model]?.max || getModelConfig(model)?.maxRefImages || 1;
   const defaultLayout = getDefaultRetryLayout(model);
   const shouldKeepLayout = modelCompatible && isRetryLayoutCompatible(model, job.output_size, job.aspect_ratio);
   const outputSize: OutputSize = shouldKeepLayout ? job.output_size : defaultLayout.outputSize;

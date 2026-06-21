@@ -54,7 +54,6 @@ interface TextToImageFormProps {
     aspectRatio?: AspectRatio;
     temperature?: number;
     model?: ModelId;
-    useTokenMode?: boolean;
     gptImageQuality?: GptImageQuality;
     gptImageStyle?: GptImageStyle;
     gptImageBackground?: GptImageBackground;
@@ -79,7 +78,6 @@ export function TextToImageForm({ onSubmit, disabled = false, onDraftConsumed, o
   const [temperature, setTemperature] = useState<number>(1);
   const [gptImageAdvancedParams, setGptImageAdvancedParams] = useState<GptImageAdvancedParams>(DEFAULT_GPT_IMAGE_ADVANCED_PARAMS);
   const [parallelCount, setParallelCount] = useState<ParallelCount>(1);
-  const [useTokenMode, setUseTokenMode] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -197,8 +195,6 @@ export function TextToImageForm({ onSubmit, disabled = false, onDraftConsumed, o
       setTemperature(nextTemperature);
       setGptImageAdvancedParams(nextAdvancedParams);
       setParallelCount(nextParallelCount);
-      setUseTokenMode(useInitial && typeof initialData?.useTokenMode === 'boolean' ? initialData.useTokenMode : (saved.useTokenMode ?? false));
-
       if (useInitial && initialData?.prompt) {
         setPrompt(initialData.prompt);
       }
@@ -220,9 +216,8 @@ export function TextToImageForm({ onSubmit, disabled = false, onDraftConsumed, o
       gptImageStyle: gptImageAdvancedParams.style,
       gptImageBackground: gptImageAdvancedParams.background,
       parallelCount,
-      useTokenMode,
     });
-  }, [model, outputSize, customSize, aspectRatio, temperature, gptImageAdvancedParams, parallelCount, useTokenMode, settingsReady]);
+  }, [model, outputSize, customSize, aspectRatio, temperature, gptImageAdvancedParams, parallelCount, settingsReady]);
 
   const removeFromQueue = (id: string) => {
     setQueue(queue.filter((item) => item.id !== id));
@@ -240,7 +235,7 @@ export function TextToImageForm({ onSubmit, disabled = false, onDraftConsumed, o
         customSize,
         aspectRatio,
         temperature,
-        model: useTokenMode ? `${model}-tokens` : model,
+        model,
         gptImageQuality: gptImageAdvancedParams.quality,
         gptImageStyle: gptImageAdvancedParams.style,
         gptImageBackground: gptImageAdvancedParams.background,
@@ -349,8 +344,6 @@ export function TextToImageForm({ onSubmit, disabled = false, onDraftConsumed, o
               <GenerationParamsBar
                 value={{ model, outputSize, customSize, aspectRatio, temperature, parallelCount, gptImageAdvancedParams }}
                 onChange={handleParamsChange}
-                useTokenMode={useTokenMode}
-                onUseTokenModeChange={setUseTokenMode}
               />
             </div>
 

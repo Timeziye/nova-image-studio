@@ -1,30 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { verifyPassword } from '@/lib/password-utils';
 import { ConfirmDialog } from '@/components/workspace/dialogs/ConfirmDialog';
 import type { PromptGalleryMode } from '@/hooks/usePromptGalleryConfig';
 
-// 加盐后的密码哈希（需要更新：用 hashPassword 生成新的哈希值替换下方占位符）
-const PASSWORD_HASH = 'REPLACE_WITH_NEW_SALTED_HASH';
-// 旧的无盐哈希，用于向后兼容验证
-const LEGACY_PASSWORD_HASH = '0572f0f48c9d4da7f59ccfff270df8a46297128f367248c5319ffe5b16e2f3ad';
-
-/** 验证密码：先尝试加盐哈希，失败后回退无盐哈希（向后兼容） */
-async function checkPassword(password: string): Promise<boolean> {
-  if (PASSWORD_HASH !== 'REPLACE_WITH_NEW_SALTED_HASH') {
-    const isValid = await verifyPassword(password, PASSWORD_HASH);
-    if (isValid) return true;
-  }
-  // 回退：使用无盐 SHA-256 验证旧哈希
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const legacyHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  return legacyHash === LEGACY_PASSWORD_HASH;
-}
-
 export function usePromptGalleryAccess(
   mode: PromptGalleryMode,
+  passwordEnabled: boolean,
   onError: (message: string) => void,
   onUnlocked?: () => void,
 ) {
@@ -44,18 +24,16 @@ export function usePromptGalleryAccess(
 
   const handlePromptGalleryEntry = useCallback(() => {
     if (mode === '3') return;
-    if (mode === '1') {
+    if (mode === '1' || (mode === '2' && !passwordEnabled)) {
+      setShowPromptGallery(true);
       onUnlocked?.();
       return;
     }
-    // mode === '2' 私密模式：7次点击 + 密码验证
     if (showPromptGallery) return;
 
-    setClickCount(prev => {
+    setClickCount((prev) => {
       const next = prev + 1;
-      if (clickTimerRef.current) {
-        clearTimeout(clickTimerRef.current);
-      }
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       if (next >= 7) {
         setPasswordDialogOpen(true);
         return 0;
@@ -65,12 +43,17 @@ export function usePromptGalleryAccess(
       }, 2000);
       return next;
     });
-  }, [mode, showPromptGallery, onUnlocked]);
+  }, [mode, onUnlocked, passwordEnabled, showPromptGallery]);
 
   const handlePasswordSubmit = useCallback(async () => {
     try {
-      const isValid = await checkPassword(passwordInput);
-      if (isValid) {
+      const response = await fetch('/api/nova/prompt-gallery/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: passwordInput }),
+      });
+      const data = await response.json().catch(() => ({ ok: false }));
+      if (data.ok) {
         setShowPromptGallery(true);
         setPasswordDialogOpen(false);
         setPasswordInput('');
@@ -86,9 +69,7 @@ export function usePromptGalleryAccess(
 
   useEffect(() => {
     return () => {
-      if (clickTimerRef.current) {
-        clearTimeout(clickTimerRef.current);
-      }
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
     };
   }, []);
 
@@ -121,7 +102,7 @@ export function PromptGalleryAccessDialog({
   return (
     <ConfirmDialog
       title="提示词广场验证"
-      message={
+      message={(
         <div className="space-y-3">
           <p>请输入密码以开启提示词广场。</p>
           <input
@@ -129,15 +110,13 @@ export function PromptGalleryAccessDialog({
             value={passwordInput}
             onChange={(event) => onPasswordChange(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                onSubmit();
-              }
+              if (event.key === 'Enter') onSubmit();
             }}
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
             autoFocus
           />
         </div>
-      }
+      )}
       confirmText="验证"
       variant="default"
       onConfirm={onSubmit}

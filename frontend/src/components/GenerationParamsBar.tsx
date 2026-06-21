@@ -8,7 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { CustomSizeDialog } from '@/components/CustomSizeDialog';
 import { GptImageAdvancedParamsControl } from '@/components/GptImageAdvancedParamsControl';
 import { cn } from '@/lib/utils';
-import { MODEL_OPTIONS, isGptImageModel, supportsTokenMode, type ModelId } from '@/lib/gemini-config';
+import { MODEL_OPTIONS, isGptImageModel, type ModelId } from '@/lib/gemini-config';
 import {
   getAspectRatioOptions,
   getCustomSizeMaxSide,
@@ -39,9 +39,6 @@ type ButtonSize = 'xs' | 'sm';
 interface GenerationParamsBarProps {
   value: GenerationParamsValue;
   onChange: (patch: Partial<GenerationParamsValue>) => void;
-  /** 仅当提供 onUseTokenModeChange 时才渲染「按量计费」开关（文生图用，画布不用）。 */
-  useTokenMode?: boolean;
-  onUseTokenModeChange?: (next: boolean) => void;
   size?: ButtonSize;
   className?: string;
 }
@@ -50,7 +47,7 @@ interface GenerationParamsBarProps {
  * 共享的「模型 + 生成参数」控件条（自宿主 TextToImageForm 抽取）。受控：对外只发最终 patch，
  * 模型/分辨率联动级联在内部完成。文生图与无限画布编排节点共用，保证展示一致并支持自定义分辨率。
  */
-export function GenerationParamsBar({ value, onChange, useTokenMode = false, onUseTokenModeChange, size = 'xs', className }: GenerationParamsBarProps) {
+export function GenerationParamsBar({ value, onChange, size = 'xs', className }: GenerationParamsBarProps) {
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [sizePopoverOpen, setSizePopoverOpen] = useState(false);
   const [aspectPopoverOpen, setAspectPopoverOpen] = useState(false);
@@ -69,8 +66,6 @@ export function GenerationParamsBar({ value, onChange, useTokenMode = false, onU
   const customSizeAvailable = supportsCustomSize(model) && !autoLayoutLocked;
   const customSizeMaxSide = getCustomSizeMaxSide(model) || 2048;
   const displaySizeLabel = value.customSize || getOutputSizeLabel(value.outputSize);
-  const tokenToggleEnabled = Boolean(onUseTokenModeChange);
-
   const handleModelChange = (newModel: ModelId) => {
     const nextGpt = getGptImageAdvancedParamsForModel(newModel, value.gptImageAdvancedParams);
     const nextSizeOptions = getSizeOptions(newModel);
@@ -78,7 +73,6 @@ export function GenerationParamsBar({ value, onChange, useTokenMode = false, onU
     const nextCustomSize = supportsCustomSize(newModel) ? normalizeCustomImageSize(value.customSize, getCustomSizeMaxSide(newModel)) : undefined;
     const aspectOptions = getAspectRatioOptions(newModel, nextOutputSize);
     const nextAspectRatio: AspectRatio = aspectOptions.find(a => a.value === value.aspectRatio) ? value.aspectRatio : (aspectOptions[0]?.value || '1:1');
-    onUseTokenModeChange?.(false);
     onChange({ model: newModel, outputSize: nextOutputSize, customSize: nextCustomSize, aspectRatio: nextAspectRatio, gptImageAdvancedParams: nextGpt });
   };
 
@@ -115,43 +109,21 @@ export function GenerationParamsBar({ value, onChange, useTokenMode = false, onU
       <Popover open={modelPopoverOpen} onOpenChange={setModelPopoverOpen}>
         <PopoverTrigger className={cn(buttonVariants({ variant: 'outline', size }), 'gap-1')} title="模型选择">
           <Sparkles className="h-3 w-3" />
-          <span className="shrink-0 truncate text-[11px]">{MODEL_OPTIONS.find(o => o.value === model)?.label}{useTokenMode ? '（按量计费）' : ''}</span>
+          <span className="shrink-0 truncate text-[11px]">{MODEL_OPTIONS.find(o => o.value === model)?.label}</span>
         </PopoverTrigger>
         <PopoverContent className="w-48 p-1" align="start">
-          {MODEL_OPTIONS.map((option) => {
-            const isTokenCapable = tokenToggleEnabled && supportsTokenMode(option.value);
-            const isTokenActive = useTokenMode && model === option.value;
-            const isSelected = model === option.value;
-            return (
-              <div key={option.value} className={cn('flex items-center justify-between rounded-md text-sm hover:bg-muted', isSelected && 'bg-muted font-medium')}>
-                <button
-                  onClick={() => {
-                    handleModelChange(option.value);
-                    setModelPopoverOpen(false);
-                  }}
-                  className="flex-1 text-left px-2.5 py-1.5"
-                >
-                  {option.label}
-                </button>
-                {isTokenCapable && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!isSelected) handleModelChange(option.value);
-                      onUseTokenModeChange?.(!useTokenMode);
-                    }}
-                    className="mr-1 shrink-0"
-                    title={isTokenActive ? '关闭按量付费' : '开启按量付费'}
-                  >
-                    <span className={cn('relative inline-flex h-4 w-7 items-center rounded-[4px] border transition-colors', isTokenActive ? 'border-primary bg-primary' : 'border-input bg-muted')}>
-                      <span className={cn('pointer-events-none block h-3 w-3 rounded-[2px] shadow-sm transition-transform', isTokenActive ? 'translate-x-3.5 bg-primary-foreground' : 'translate-x-0.5 bg-muted-foreground/40')} />
-                    </span>
-                  </button>
-                )}
-              </div>
-            );
-          })}
+          {MODEL_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              onClick={() => {
+                handleModelChange(option.value);
+                setModelPopoverOpen(false);
+              }}
+              className={cn('w-full text-left px-2.5 py-1.5 rounded-md text-sm hover:bg-muted', model === option.value && 'bg-muted font-medium')}
+            >
+              {option.label}
+            </button>
+          ))}
         </PopoverContent>
       </Popover>
 

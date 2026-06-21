@@ -1,6 +1,12 @@
 'use client';
 
-// 混淆存储键名，避免一眼识别
+import {
+  loadRegistry,
+  saveRegistry,
+  type NovaModelRegistry,
+  type ProviderProtocol,
+} from '@/lib/nova-models';
+
 const STORAGE_KEY_CCODE_API = 'nova-api-key';
 const STORAGE_KEY_CCODE_API_LEGACY = 'ccode-api-key';
 const OBFUSCATION_MARKER = '__e:';
@@ -36,10 +42,6 @@ function removeStorageItem(key: string): void {
   }
 }
 
-/**
- * 简单混淆：XOR 每个字符后 Base64 编码
- * 不是加密（客户端无法真正加密），但防止明文被一眼读取，增加 XSS 利用的成本
- */
 function obfuscate(value: string): string {
   const chars: string[] = [];
   for (let i = 0; i < value.length; i++) {
@@ -62,53 +64,75 @@ function deobfuscate(value: string): string | null {
   }
 }
 
-export function getStoredApiKey(): string {
-  const obfuscated = getStorageItem(STORAGE_KEY_CCODE_API);
-  if (obfuscated) {
-    const result = deobfuscate(obfuscated);
-    if (result !== null) return result;
+function migrateLegacyApiKeyIfNeeded(registry?: NovaModelRegistry): NovaModelRegistry {
+  const nextRegistry = registry || loadRegistry();
+
+  const legacyObfuscated = getStorageItem(STORAGE_KEY_CCODE_API);
+  if (legacyObfuscated) {
+    const legacyKey = deobfuscate(legacyObfuscated);
+    if (legacyKey && !nextRegistry.providers.openai.apiKey) {
+      nextRegistry.providers.openai.apiKey = legacyKey;
+      saveRegistry(nextRegistry);
+    }
+    removeStorageItem(STORAGE_KEY_CCODE_API);
   }
-  // 向后兼容：尝试读取旧格式的明文 key，自动迁移
-  const legacy = getStorageItem(STORAGE_KEY_CCODE_API_LEGACY);
-  if (legacy) {
-    setStoredApiKey(legacy);
+
+  const legacyPlainText = getStorageItem(STORAGE_KEY_CCODE_API_LEGACY);
+  if (legacyPlainText) {
+    if (!nextRegistry.providers.openai.apiKey) {
+      nextRegistry.providers.openai.apiKey = legacyPlainText;
+      saveRegistry(nextRegistry);
+    }
     removeStorageItem(STORAGE_KEY_CCODE_API_LEGACY);
-    return legacy;
   }
-  return '';
+
+  return nextRegistry;
 }
 
-export function setStoredApiKey(key: string): boolean {
-  // 同时清理旧格式的明文 key
+export function getStoredApiKey(protocol: ProviderProtocol = 'openai'): string {
+  const registry = migrateLegacyApiKeyIfNeeded();
+  return registry.providers[protocol].apiKey || '';
+}
+
+export function setStoredApiKey(key: string, protocol: ProviderProtocol = 'openai'): boolean {
+  const registry = migrateLegacyApiKeyIfNeeded();
+  registry.providers[protocol].apiKey = key.trim();
+  saveRegistry(registry);
+  removeStorageItem(STORAGE_KEY_CCODE_API);
   removeStorageItem(STORAGE_KEY_CCODE_API_LEGACY);
-  return setStorageItem(STORAGE_KEY_CCODE_API, obfuscate(key));
+  return true;
 }
 
-export function removeStoredApiKey(): void {
+export function removeStoredApiKey(protocol?: ProviderProtocol): void {
+  const registry = migrateLegacyApiKeyIfNeeded();
+  if (protocol) {
+    registry.providers[protocol].apiKey = '';
+  } else {
+    registry.providers.google.apiKey = '';
+    registry.providers.openai.apiKey = '';
+  }
+  saveRegistry(registry);
   removeStorageItem(STORAGE_KEY_CCODE_API);
   removeStorageItem(STORAGE_KEY_CCODE_API_LEGACY);
 }
 
-/** @deprecated Use getStoredApiKey instead */
 export const getStoredCcodeKey = getStoredApiKey;
-/** @deprecated Use setStoredApiKey instead */
 export const setStoredCcodeKey = setStoredApiKey;
-/** @deprecated Use removeStoredApiKey instead */
 export const removeStoredCcodeKey = removeStoredApiKey;
 
-export function getApiKeyFromStorage(): string {
-  return getStoredApiKey();
+export function getApiKeyFromStorage(protocol?: ProviderProtocol): string {
+  const registry = migrateLegacyApiKeyIfNeeded();
+  if (protocol) {
+    return registry.providers[protocol].apiKey || '';
+  }
+  return registry.providers.openai.apiKey || registry.providers.google.apiKey || '';
 }
 
 export function hasAnyApiKey(): boolean {
-  return !!getStoredApiKey();
+  const registry = migrateLegacyApiKeyIfNeeded();
+  return Boolean(registry.providers.openai.apiKey || registry.providers.google.apiKey);
 }
 
-// ===== 通用 JSON 持久化工具 =====
-
-/**
- * 从 localStorage 读取并解析 JSON，失败返回空对象
- */
 export function loadJsonFromStorage<T>(key: string): Partial<T> {
   if (typeof window === 'undefined') return {};
   try {
@@ -119,9 +143,6 @@ export function loadJsonFromStorage<T>(key: string): Partial<T> {
   }
 }
 
-/**
- * 将对象序列化为 JSON 写入 localStorage，忽略存储不可用或配额超限
- */
 export function saveJsonToStorage<T>(key: string, value: T): void {
   if (typeof window === 'undefined') return;
   try {

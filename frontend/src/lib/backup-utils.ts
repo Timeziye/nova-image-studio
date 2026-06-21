@@ -27,8 +27,9 @@ function isBlobRef(value: unknown): value is BlobRef {
 
 // localStorage keys to backup
 const LOCAL_STORAGE_KEYS = [
-    'cc-api-k',          // 新的混淆 API Key 存储键
-    'nova-api-key',     // 旧格式兼容
+    'cc-api-k',
+    'nova-api-key',
+    'nova-model-registry',
     'nova-jobs',
     'nova-t2i-settings',
     'nova-i2i-settings',
@@ -382,14 +383,32 @@ function importLocalStorage(data: unknown): void {
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return;
 
     const allowedKeySet = new Set(LOCAL_STORAGE_KEYS);
-    // 同时允许新的混淆存储键
     allowedKeySet.add('cc-api-k');
+    allowedKeySet.add('ccode-api-key');
 
     for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-        // 只允许白名单内的键名
         if (!allowedKeySet.has(key)) continue;
-        // 只允许字符串值
         if (typeof value !== 'string') continue;
+
+        if (key === 'nova-model-registry') {
+            try {
+                const parsed = JSON.parse(value);
+                if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+                    continue;
+                }
+                const record = parsed as Record<string, unknown>;
+                const hasProviders = typeof record.providers === 'object' && record.providers !== null;
+                const hasImageModels = Array.isArray(record.imageModels);
+                const hasTextModels = Array.isArray(record.textModels);
+                const hasDefaults = typeof record.defaults === 'object' && record.defaults !== null;
+                if (!hasProviders || !hasImageModels || !hasTextModels || !hasDefaults) {
+                    continue;
+                }
+            } catch {
+                continue;
+            }
+        }
+
         try {
             localStorage.setItem(key, value);
         } catch {
@@ -554,6 +573,7 @@ export async function importAllData(file: File, onProgress?: ProgressCallback): 
             // skip failed localStorage removal
         }
     }
+    try { localStorage.removeItem('ccode-api-key'); } catch { /* ignore */ }
 
     if (onProgress) {
         onProgress({ percent: 15, message: '正在导入 localStorage...' });

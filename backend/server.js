@@ -87,6 +87,12 @@ function resolveNovaApiBaseUrl() {
   return normalizeBaseUrl(getRuntimeEnv().NOVA_API_BASE_URL) || 'https://api.openai.com';
 }
 
+function hashPromptGalleryPassword(password) {
+  return createHash('sha256')
+    .update(`${PROMPT_GALLERY_PASSWORD_SALT}${String(password || '')}`)
+    .digest('hex');
+}
+
 const PORT = Number(process.env.PORT || 3000);
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 const DB_PATH = process.env.NOVA_TASK_DB || path.join(__dirname, 'nova-tasks.sqlite');
@@ -111,6 +117,7 @@ const DEFAULT_GPT_IMAGE_ADVANCED_PARAMS = {
   style: 'auto',
   background: 'auto',
 };
+const PROMPT_GALLERY_PASSWORD_SALT = 'nova-pg-2026';
 const CUSTOM_IMAGE_SIZE_LIMITS = {
   multiple: 16,
   maxAspectRatio: 3,
@@ -1493,7 +1500,25 @@ async function handleApi(req, res, pathname) {
       const env = getRuntimeEnv();
       const rawMode = String(env.PROMPT_GALLERY_MODE || '2').trim();
       const mode = ['1', '2', '3'].includes(rawMode) ? rawMode : '2';
-      sendJson(res, 200, { promptGalleryMode: mode });
+      sendJson(res, 200, {
+        promptGalleryMode: mode,
+        promptGalleryPasswordEnabled: String(env.PROMPT_GALLERY_PASSWORD || '').trim().length > 0,
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && apiPathname === '/api/nova/prompt-gallery/verify') {
+      const env = getRuntimeEnv();
+      const expected = String(env.PROMPT_GALLERY_PASSWORD || '').trim();
+      if (!expected) {
+        sendJson(res, 200, { ok: true });
+        return true;
+      }
+
+      const body = await readJsonBody(req);
+      const password = String(body?.password || '');
+      const ok = hashPromptGalleryPassword(password) === hashPromptGalleryPassword(expected);
+      sendJson(res, 200, { ok });
       return true;
     }
 

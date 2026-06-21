@@ -71,7 +71,6 @@ interface ImageGenerationWorkbenchProps {
     aspectRatio?: AspectRatio;
     temperature?: number;
     model?: ModelId;
-    useTokenMode?: boolean;
     gptImageQuality?: GptImageQuality;
     gptImageStyle?: GptImageStyle;
     gptImageBackground?: GptImageBackground;
@@ -119,7 +118,6 @@ export function ImageGenerationWorkbench({
   const [temperature, setTemperature] = useState<number>(1);
   const [gptImageAdvancedParams, setGptImageAdvancedParams] = useState<GptImageAdvancedParams>(DEFAULT_GPT_IMAGE_ADVANCED_PARAMS);
   const [parallelCount, setParallelCount] = useState<ParallelCount>(1);
-  const [useTokenMode, setUseTokenMode] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
 
   const [isDragOver, setIsDragOver] = useState(false);
@@ -198,8 +196,6 @@ export function ImageGenerationWorkbench({
       setTemperature(nextTemperature);
       setGptImageAdvancedParams(nextAdvancedParams);
       setParallelCount(nextParallelCount);
-      setUseTokenMode(useInitial && typeof initialData?.useTokenMode === 'boolean' ? initialData.useTokenMode : (saved.useTokenMode ?? false));
-
       if (useInitial) {
         setPrompt(initialData?.prompt || '');
         setPendingFiles((initialData?.refImages || []).map(img => ({
@@ -232,9 +228,8 @@ export function ImageGenerationWorkbench({
       gptImageStyle: gptImageAdvancedParams.style,
       gptImageBackground: gptImageAdvancedParams.background,
       parallelCount,
-      useTokenMode,
     });
-  }, [model, outputSize, customSize, aspectRatio, temperature, gptImageAdvancedParams, parallelCount, useTokenMode, settingsReady]);
+  }, [model, outputSize, customSize, aspectRatio, temperature, gptImageAdvancedParams, parallelCount, settingsReady]);
 
   const handleOptimize = useCallback(() => {
     const apiKey = getApiKeyFromStorage();
@@ -511,7 +506,7 @@ export function ImageGenerationWorkbench({
   const handleSubmit = () => {
     if (!prompt.trim() || disabled || loading) return;
 
-    const modelWithBilling = useTokenMode ? `${model}-tokens` : model;
+    const modelWithBilling = model;
     if (pendingFiles.length > 0) {
       onSubmitImage({
         prompt: prompt.trim(),
@@ -654,8 +649,6 @@ export function ImageGenerationWorkbench({
               <GenerationParamsBar
                 value={{ model, outputSize, customSize, aspectRatio, temperature, parallelCount, gptImageAdvancedParams }}
                 onChange={handleParamsChange}
-                useTokenMode={useTokenMode}
-                onUseTokenModeChange={setUseTokenMode}
               />
             </div>
 

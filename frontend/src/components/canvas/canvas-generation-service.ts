@@ -5,10 +5,8 @@
  * 仅使用 host 的 nova-task-client（createNovaTask / getNovaTask / ackNovaTask）。
  * 视频/音频不在范围内；图生图无 mask（队列不支持）。
  */
-import { ackNovaTask, createNovaTask, getNovaTask, type NovaTaskResponse, type NovaTaskStatus, type ImageReference } from "@/lib/ccode-task-client";
-import { getTokenModelId, supportsTokenMode } from "@/lib/gemini-config";
+import { ackNovaTask, createNovaTask, getNovaTask, resolveImageTaskProvider, type NovaTaskResponse, type NovaTaskStatus, type ImageReference } from "@/lib/ccode-task-client";
 import { normalizeModel } from "@/lib/model-capabilities";
-import { getApiKeyFromStorage } from "@/lib/settings-storage";
 import { compressReferenceDataUrl } from "./lib/image-utils";
 import { uploadImage } from "./lib/image-storage";
 import type { CanvasGenerationConfig } from "./types";
@@ -45,8 +43,7 @@ async function toImageReference(image: ReferenceImage): Promise<ImageReference |
 
 /** 合成实际提交用模型 ID：base 模型 +（按量付费且模型支持时）-tokens 后缀。 */
 function resolveTaskModel(config: CanvasGenerationConfig): string {
-  const base = normalizeModel(config.model);
-  return config.useTokenMode && supportsTokenMode(base) ? getTokenModelId(base) : base;
+  return normalizeModel(config.model);
 }
 
 /** 提交单个节点的生成任务（count=1），返回 taskId。 */
@@ -55,15 +52,15 @@ export async function submitNodeGeneration(args: {
   referenceImages: ReferenceImage[];
   config: CanvasGenerationConfig;
 }): Promise<string> {
-  const apiKey = getApiKeyFromStorage();
+  const provider = resolveImageTaskProvider(resolveTaskModel(args.config));
+  const apiKey = provider.apiKey;
   if (!apiKey) throw new CanvasApiKeyMissingError();
 
   const imageRefs = (await Promise.all(args.referenceImages.map(toImageReference))).filter((ref): ref is ImageReference => ref !== null);
-  // TODO: 从模型注册表读取实际的 baseUrl 和 protocol
   const taskId = await createNovaTask({
     apiKey,
-    baseUrl: 'https://api.openai.com',
-    protocol: 'openai',
+    baseUrl: provider.baseUrl,
+    protocol: provider.protocol,
     mode: imageRefs.length > 0 ? "image-to-image" : "text-to-image",
     prompt: args.prompt,
     outputSize: args.config.outputSize,
@@ -131,15 +128,15 @@ export async function generateCanvasImages(args: {
   onStatus?: (status: NovaTaskStatus) => void;
   signal?: AbortSignal;
 }): Promise<CanvasGeneratedImage[]> {
-  const apiKey = getApiKeyFromStorage();
+  const provider = resolveImageTaskProvider(resolveTaskModel(args.config));
+  const apiKey = provider.apiKey;
   if (!apiKey) throw new CanvasApiKeyMissingError();
 
   const imageRefs = (await Promise.all(args.referenceImages.map(toImageReference))).filter((ref): ref is ImageReference => ref !== null);
-  // TODO: 从模型注册表读取实际的 baseUrl 和 protocol
   const taskId = await createNovaTask({
     apiKey,
-    baseUrl: 'https://api.openai.com',
-    protocol: 'openai',
+    baseUrl: provider.baseUrl,
+    protocol: provider.protocol,
     mode: imageRefs.length > 0 ? "image-to-image" : "text-to-image",
     prompt: args.prompt,
     outputSize: args.config.outputSize,

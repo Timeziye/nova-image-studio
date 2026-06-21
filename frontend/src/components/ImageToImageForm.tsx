@@ -23,7 +23,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import { MODEL_OPTIONS, MODEL_IMAGE_LIMITS, isGptImageModel, supportsTokenMode, type ModelId } from '@/lib/gemini-config';
+import { MODEL_OPTIONS, MODEL_IMAGE_LIMITS, isGptImageModel, type ModelId } from '@/lib/gemini-config';
 import {
   detectClosestAspectRatio,
   getAspectRatioOptions,
@@ -91,7 +91,6 @@ interface ImageToImageFormProps {
     temperature?: number;
     aspectRatio?: AspectRatio;
     model?: ModelId;
-    useTokenMode?: boolean;
     gptImageQuality?: GptImageQuality;
     gptImageStyle?: GptImageStyle;
     gptImageBackground?: GptImageBackground;
@@ -125,7 +124,6 @@ export function ImageToImageForm({
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
   const [gptImageAdvancedParams, setGptImageAdvancedParams] = useState<GptImageAdvancedParams>(DEFAULT_GPT_IMAGE_ADVANCED_PARAMS);
   const [parallelCount, setParallelCount] = useState<ParallelCount>(1);
-  const [useTokenMode, setUseTokenMode] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
 
   // 根据当前模型限制上传数量
@@ -192,7 +190,6 @@ export function ImageToImageForm({
 
   const handleModelChange = (newModel: ModelId) => {
     setModel(newModel);
-    setUseTokenMode(false);
     setGptImageAdvancedParams(prev => getGptImageAdvancedParamsForModel(newModel, prev));
     const sizeOptions = getSizeOptions(newModel);
     const nextOutputSize = outputSize === 'auto' && supportsAutoLayout(newModel)
@@ -300,8 +297,6 @@ export function ImageToImageForm({
     setTemperature(nextTemperature);
     setGptImageAdvancedParams(nextAdvancedParams);
     setParallelCount(nextParallelCount);
-    setUseTokenMode(useInitial && typeof initialData?.useTokenMode === 'boolean' ? initialData.useTokenMode : (saved.useTokenMode ?? false));
-
     // 如果有初始数据，填充提示词和参考图
     if (useInitial) {
       if (initialData?.prompt) {
@@ -339,9 +334,8 @@ export function ImageToImageForm({
       gptImageStyle: gptImageAdvancedParams.style,
       gptImageBackground: gptImageAdvancedParams.background,
       parallelCount,
-      useTokenMode,
     });
-  }, [model, outputSize, customSize, aspectRatio, temperature, gptImageAdvancedParams, parallelCount, useTokenMode, settingsReady]);
+  }, [model, outputSize, customSize, aspectRatio, temperature, gptImageAdvancedParams, parallelCount, settingsReady]);
 
   const handleSubmit = () => {
     if (prompt.trim() && pendingFiles.length > 0) {
@@ -352,7 +346,7 @@ export function ImageToImageForm({
         customSize,
         temperature,
         aspectRatio,
-        model: useTokenMode ? `${model}-tokens` : model,
+        model,
         gptImageQuality: gptImageAdvancedParams.quality,
         gptImageStyle: gptImageAdvancedParams.style,
         gptImageBackground: gptImageAdvancedParams.background,
@@ -721,59 +715,24 @@ export function ImageToImageForm({
               title="模型选择"
             >
               <Sparkles className="h-3 w-3" />
-              <span className="shrink-0 truncate text-[11px]">{MODEL_OPTIONS.find(o => o.value === model)?.label}{useTokenMode ? '（按量计费）' : ''}</span>
+              <span className="shrink-0 truncate text-[11px]">{MODEL_OPTIONS.find(o => o.value === model)?.label}</span>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
-              {MODEL_OPTIONS.map((option) => {
-                const isTokenCapable = supportsTokenMode(option.value);
-                const isTokenActive = useTokenMode && model === option.value;
-                const isSelected = model === option.value;
-                return (
-                  <div
-                    key={option.value}
-                    className={cn(
-                      'flex items-center justify-between rounded-md text-sm hover:bg-muted',
-                      isSelected && 'bg-muted font-medium'
-                    )}
-                  >
-                    <button
-                      onClick={() => {
-                        handleModelChange(option.value);
-                        setModelPopoverOpen(false);
-                      }}
-                      className="flex-1 text-left px-2.5 py-1.5"
-                    >
-                      {option.label}
-                    </button>
-                    {isTokenCapable && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (!isSelected) handleModelChange(option.value);
-                          setUseTokenMode(prev => !prev);
-                        }}
-                        className="mr-1 shrink-0"
-                        title={isTokenActive ? "关闭按量付费" : "开启按量付费"}
-                      >
-                        <span className={cn(
-                          "relative inline-flex h-4 w-7 items-center rounded-[4px] border transition-colors",
-                          isTokenActive
-                            ? "border-primary bg-primary"
-                            : "border-input bg-muted"
-                        )}>
-                          <span className={cn(
-                            "pointer-events-none block h-3 w-3 rounded-[2px] shadow-sm transition-transform",
-                            isTokenActive
-                              ? "translate-x-3.5 bg-primary-foreground"
-                              : "translate-x-0.5 bg-muted-foreground/40"
-                          )} />
-                        </span>
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+              {MODEL_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => {
+                    handleModelChange(option.value);
+                    setModelPopoverOpen(false);
+                  }}
+                  className={cn(
+                    'w-full text-left px-2.5 py-1.5 rounded-md text-sm hover:bg-muted',
+                    model === option.value && 'bg-muted font-medium'
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
             </PopoverContent>
           </Popover>
 
