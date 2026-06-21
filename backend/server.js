@@ -83,6 +83,15 @@ function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
+function normalizeProtocolBaseUrl(protocol, url) {
+  const normalized = normalizeBaseUrl(url);
+  if (!normalized) return '';
+  if (protocol === 'google') {
+    return normalized.endsWith('/v1beta') ? normalized.slice(0, -7) : normalized;
+  }
+  return normalized.endsWith('/v1') ? normalized.slice(0, -3) : normalized;
+}
+
 function resolveNovaApiBaseUrl() {
   return normalizeBaseUrl(getRuntimeEnv().NOVA_API_BASE_URL) || 'https://api.openai.com';
 }
@@ -629,6 +638,8 @@ function validateCreatePayload(body) {
   if (!Number.isInteger(body.parallelCount) || body.parallelCount < 1 || body.parallelCount > 4) throw new Error('并发数量无效');
 
   if (!Array.isArray(body.images)) body.images = [];
+  body.baseUrl = normalizeProtocolBaseUrl(body.protocol, body.baseUrl);
+  if (!body.baseUrl) throw new Error('缺少 API 基础地址');
   // 开源版：不做模型级参数规范化，前端负责传递正确的参数，后端无条件透传
 }
 
@@ -849,6 +860,20 @@ function parseJsonSafely(text) {
   }
 }
 
+function isLikelyHtmlResponse(text) {
+  const trimmed = String(text || '').trim().toLowerCase();
+  return trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html') || trimmed.startsWith('<head') || trimmed.startsWith('<body');
+}
+
+function summarizeUnexpectedResponse(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  if (isLikelyHtmlResponse(trimmed)) {
+    return '上游返回了 HTML 页面而不是 JSON。通常是 baseUrl 配置错误、请求被站点网关拦截，或该地址并非兼容的图片 API。';
+  }
+  return trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
+}
+
 function getMessageFromPayload(payload) {
   if (!payload || typeof payload !== 'object') return '';
   if (typeof payload.message === 'string' && payload.message.trim()) return payload.message.trim();
@@ -981,8 +1006,15 @@ async function parseGptImageResponse(response) {
     return extractImagePayloadFromEventStream(responseText);
   }
 
+  if (isLikelyHtmlResponse(responseText)) {
+    throw new Error('上游返回了 HTML 页面而不是 JSON。通常是 baseUrl 配置错误、请求被站点网关拦截，或该地址并非兼容的图片 API。');
+  }
+
   const data = parseJsonSafely(responseText);
-  if (!data) throw new Error('响应 JSON 格式无效');
+  if (!data) {
+    const summary = summarizeUnexpectedResponse(responseText);
+    throw new Error(summary ? `响应 JSON 格式无效: ${summary}` : '响应 JSON 格式无效');
+  }
 
   const errorMessage = getErrorMessageFromPayload(data);
   if (errorMessage) throw new Error(errorMessage);
@@ -1082,7 +1114,16 @@ async function generateNovaGeminiImage(apiKey, request, options = {}) {
     throw new Error(`API 请求失败: ${response.status} ${errorText}`);
   }
 
-  return extractGeminiImagePayload(await response.json());
+  const responseText = await response.text();
+  if (isLikelyHtmlResponse(responseText)) {
+    throw new Error('上游返回了 HTML 页面而不是 JSON。通常是 baseUrl 配置错误、请求被站点网关拦截，或该地址并非兼容的图片 API。');
+  }
+  const data = parseJsonSafely(responseText);
+  if (!data) {
+    const summary = summarizeUnexpectedResponse(responseText);
+    throw new Error(summary ? `响应 JSON 格式无效: ${summary}` : '响应 JSON 格式无效');
+  }
+  return extractGeminiImagePayload(data);
 }
 
 function drainQueue() {

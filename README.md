@@ -95,7 +95,7 @@ Nova Image 采用**用户自定义模型**架构：
 - **模型级配置**：每个图片模型和文本模型都独立保存协议、显示名称、模型 ID、API Key 与 Base URL
 - **图像模型**：用户自由添加、编辑、删除，支持设置协议、显示名称、模型 ID、最大参考图数量、最大分辨率
 - **Image 2 额外参数**：仅 OpenAI 图片模型显示，透明背景、质量、风格控件默认开启，用户可手动关闭
-- **文字模型**：开源版默认保留 `GPT 5.4 Mini` 与 `Gemini 2.5 Flash`，支持继续自定义扩展
+- **文字模型**：支持自定义扩展，兼容 Gemini 和 OpenAI Response
 - **默认模型**：可为文本生图、图生图、反推提示词、Agent 等任务分别设置默认模型
 
 ### 任务系统
@@ -356,7 +356,9 @@ NOVA_ACCEPT_NEW_TASKS=false
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tianjiangqiji/nova-image-studio&type=date&legend=top-left" />
  </picture>
 </a>
+
 ---
+
 ## 📄 许可证
 
 本项目采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）开源许可证。

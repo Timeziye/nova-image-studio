@@ -807,7 +807,7 @@ export function useAgentChat() {
         customSize: params.customSize,
         aspectRatio: params.aspectRatio,
         temperature: params.temperature,
-        model,
+        model: provider.modelId,
         gptImageQuality: params.gptImageQuality,
         gptImageStyle: params.gptImageStyle,
         gptImageBackground: params.gptImageBackground,

@@ -342,7 +342,7 @@ export function useGifWorkflow(): UseGifWorkflowResult {
         customSize: GIF_GRID_CUSTOM_SIZE,
         aspectRatio: GIF_GRID_ASPECT_RATIO,
         temperature: 1,
-        model: input.model,
+        model: provider.modelId,
         gptImageQuality: advancedParams.quality,
         gptImageStyle: advancedParams.style,
         gptImageBackground: advancedParams.background,

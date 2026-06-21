@@ -325,14 +325,16 @@ export async function checkModelsAvailability(
   }
 }
 
-export function resolveImageTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: ProviderProtocol } {
+export function resolveImageTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: ProviderProtocol; modelId: string } {
   const registry = loadRegistry();
   const model = getImageModelById(registry, modelId);
   if (!model) throw new Error(`未找到图片模型配置: ${modelId}`);
+  const normalizedBaseUrl = normalizeModelBaseUrl(model.protocol, model.baseUrl);
   return {
     apiKey: model.apiKey,
-    baseUrl: model.baseUrl,
+    baseUrl: normalizedBaseUrl,
     protocol: model.protocol,
+    modelId: model.modelId,
   };
 }
 
@@ -340,9 +342,10 @@ export function resolveTextTaskProvider(modelId: string): { apiKey: string; base
   const registry = loadRegistry();
   const model = getTextModelById(registry, modelId);
   if (!model) throw new Error(`未找到文本模型配置: ${modelId}`);
+  const normalizedBaseUrl = normalizeModelBaseUrl(model.protocol, model.baseUrl);
   return {
     apiKey: model.apiKey,
-    baseUrl: model.baseUrl,
+    baseUrl: normalizedBaseUrl,
     protocol: model.protocol,
   };
 }
