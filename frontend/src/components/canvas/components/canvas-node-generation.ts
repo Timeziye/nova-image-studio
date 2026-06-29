@@ -49,20 +49,33 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
   let lastIndex = 0;
   let nextPrompt = "";
 
-  for (const match of prompt.matchAll(/@\[node:([^\]]+)\]/g)) {
+  const addInput = (input: NodeGenerationInput) => {
+    let label = labelByNodeId.get(input.nodeId);
+    if (!label) {
+      label = input.title.trim() || generationLabel(input.type, counts[input.type]++);
+      labelByNodeId.set(input.nodeId, label);
+      if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
+      else selectedInputs.push(input);
+    }
+    return label;
+  };
+
+  for (const match of prompt.matchAll(/@\[([^\]]+)\]/g)) {
     if (match.index === undefined) continue;
     hasToken = true;
     nextPrompt += prompt.slice(lastIndex, match.index);
-    const input = inputByNodeId.get(match[1]);
-    if (input) {
-      let label = labelByNodeId.get(input.nodeId);
-      if (!label) {
-        label = input.title.trim() || generationLabel(input.type, counts[input.type]++);
-        labelByNodeId.set(input.nodeId, label);
-        if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
-        else selectedInputs.push(input);
+    const token = match[1];
+    if (token === "all-images") {
+      const labels = inputs
+        .filter((input) => input.type === "image")
+        .map(addInput);
+      if (labels.length) nextPrompt += `所有图片（${labels.join("、")}）`;
+    } else if (token.startsWith("node:")) {
+      const input = inputByNodeId.get(token.slice("node:".length));
+      if (input) {
+        const label = addInput(input);
+        nextPrompt += input.type === "text" ? `【${label}】` : label;
       }
-      nextPrompt += input.type === "text" ? `【${label}】` : label;
     }
     lastIndex = match.index + match[0].length;
   }

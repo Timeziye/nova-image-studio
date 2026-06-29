@@ -492,6 +492,15 @@ export async function createAssetFolder(name: string): Promise<AssetFolder> {
   return folder;
 }
 
+export async function findOrCreateAssetFolder(name: string): Promise<AssetFolder> {
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error('文件夹名称不能为空');
+  const folders = await listAssetFolders();
+  const existing = folders.find(folder => folder.name.trim().toLowerCase() === normalizedName.toLowerCase());
+  if (existing) return existing;
+  return createAssetFolder(normalizedName);
+}
+
 export async function renameAssetFolder(folderId: string, name: string): Promise<void> {
   const normalizedName = name.trim();
   if (!normalizedName) throw new Error('文件夹名称不能为空');

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AgentAssetPickerDialog, AgentTextAssetPickerDialog } from "@/components/agent/AgentAssetPickerDialog";
-import { addImageAsset, addTextAsset, getAssetBlob, type ImageAsset, type TextAsset } from "@/lib/asset-store";
+import { addImageAsset, addTextAsset, getAssetBlob, type AssetFolder, type ImageAsset, type TextAsset } from "@/lib/asset-store";
 import { InfiniteCanvas } from "./components/infinite-canvas";
 import { CanvasNode, type ResizeCorner } from "./components/canvas-node";
 import { ActiveConnectionPath, ConnectionPath } from "./components/canvas-connections";
@@ -56,7 +56,7 @@ const MAX_HISTORY = 50;
 const RESULT_GRID_X_OFFSET = 96;
 const RESULT_GRID_COLUMN_GAP = 420;
 const RESULT_GRID_ROW_GAP = 300;
-const CANVAS_MENTION_TOKEN_PATTERN = /@\[node:[^\]]+\]/g;
+const CANVAS_MENTION_TOKEN_PATTERN = /@\[[^\]]+\]/g;
 
 function getResultGridColumns(count: number) {
   return count <= 2 ? 1 : 2;
@@ -563,6 +563,92 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       }
     },
     [assetPicker.nodeId, fillNodeWithConfirm, showToast],
+  );
+
+  const handleAssetFolderPickerConfirm = useCallback(
+    async (folder: AssetFolder, folderAssets: ImageAsset[]) => {
+      if (!folderAssets.length) return;
+      const targetId = assetPicker.nodeId;
+      const targetNode = targetId ? nodes.find((node) => node.id === targetId) : undefined;
+      const targetHasImage = Boolean(targetNode?.metadata?.content || targetNode?.metadata?.storageKey);
+      const base = targetNode
+        ? {
+          x: targetNode.position.x + (targetHasImage ? targetNode.width + 72 : 0),
+          y: targetNode.position.y,
+        }
+        : viewportCenterWorld();
+      const cols = folderAssets.length > 6 ? 3 : 2;
+      const gapX = 360;
+      const gapY = 300;
+      const imported: Array<{ asset: ImageAsset; stored: UploadedImage }> = [];
+
+      try {
+        for (const asset of folderAssets) {
+          const blob = await getAssetBlob(asset.id);
+          if (!blob) continue;
+          imported.push({ asset, stored: await uploadImage(blob) });
+        }
+        if (!imported.length) {
+          showToast("素材读取失败", "error");
+          return;
+        }
+
+        const newNodes: CanvasNodeData[] = [];
+        let targetUpdate: { stored: UploadedImage; asset: ImageAsset } | null = null;
+        imported.forEach((item, index) => {
+          if (targetNode && !targetHasImage && index === 0) {
+            targetUpdate = item;
+            return;
+          }
+          const adjustedIndex = targetUpdate ? index - 1 : index;
+          const size = fitNodeSize(item.stored.width, item.stored.height, 320, 320);
+          newNodes.push(createImageNode(
+            {
+              x: base.x + (adjustedIndex % cols) * gapX,
+              y: base.y + Math.floor(adjustedIndex / cols) * gapY,
+            },
+            {
+              title: item.asset.name,
+              width: size.width,
+              height: size.height,
+              metadata: storedToMetadata(item.stored, {
+                prompt: item.asset.prompt,
+                assetFolderId: folder.id,
+                assetFolderName: folder.name,
+              }),
+            },
+          ));
+        });
+
+        pushHistory();
+        setNodes((prev) => {
+          const withTarget = targetUpdate && targetNode
+            ? prev.map((node) => {
+              if (node.id !== targetNode.id) return node;
+              const size = fitNodeSize(targetUpdate!.stored.width, targetUpdate!.stored.height, 360, 360);
+              return {
+                ...node,
+                title: targetUpdate!.asset.name,
+                width: size.width,
+                height: size.height,
+                metadata: storedToMetadata(targetUpdate!.stored, {
+                  prompt: targetUpdate!.asset.prompt,
+                  assetFolderId: folder.id,
+                  assetFolderName: folder.name,
+                }),
+              };
+            })
+            : prev;
+          return [...withTarget, ...newNodes];
+        });
+        setSelectedIds([...(targetUpdate && targetNode ? [targetNode.id] : []), ...newNodes.map((node) => node.id)]);
+        setSelectedConnectionIds([]);
+        showToast(`已从文件夹 ${folder.name} 导入 ${imported.length} 张图片`, "success");
+      } catch {
+        showToast("从素材库导入文件夹失败", "error");
+      }
+    },
+    [assetPicker.nodeId, createImageNode, nodes, pushHistory, showToast, viewportCenterWorld],
   );
 
   const fillTextNode = useCallback(
@@ -1359,7 +1445,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         const mentionTokens = getCanvasMentionTokens(promptText);
         const context = [
           mentionTokens.length
-            ? `必须原样保留这些画布节点引用 token，不要删除、改写、翻译或替换成节点名称：${mentionTokens.join(" ")}。这些 token 会在画布里渲染为 @图片/@文本 芯片。`
+            ? `必须原样保留这些画布引用 token，不要删除、改写、翻译或替换成节点名称：${mentionTokens.join(" ")}。这些 token 会在画布里渲染为 @图片/@文本/@所有图片 芯片。`
             : "",
           hasPromptGalleryRoles
             ? "这是提示词广场导入的配置节点。优化时不要读取模板参考图，只使用已提供的目标角色/OC图；不要把目标角色/OC图转写成外貌文字，请保留并强化对用户上传角色图的引用，让生图模型直接参考图片理解角色。"
@@ -1680,7 +1766,14 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         }}
       />
 
-      <AgentAssetPickerDialog open={assetPicker.open} maxSelected={1} onOpenChange={(open) => setAssetPicker((prev) => ({ ...prev, open }))} onConfirm={(assets) => void handleAssetPickerConfirm(assets)} />
+      <AgentAssetPickerDialog
+        open={assetPicker.open}
+        maxSelected={1}
+        allowFolderSelection
+        onOpenChange={(open) => setAssetPicker((prev) => ({ ...prev, open }))}
+        onConfirm={(assets) => void handleAssetPickerConfirm(assets)}
+        onConfirmFolder={(folder, assets) => void handleAssetFolderPickerConfirm(folder, assets)}
+      />
       <AgentTextAssetPickerDialog open={textAssetPicker.open} onOpenChange={(open) => setTextAssetPicker((prev) => ({ ...prev, open }))} onConfirm={handleTextAssetPickerConfirm} />
 
       <CanvasPromptGalleryImportDialog open={promptGalleryOpen} importing={promptGalleryImporting} onOpenChange={setPromptGalleryOpen} onConfirm={(prompt) => void importPromptGalleryTemplate(prompt)} />

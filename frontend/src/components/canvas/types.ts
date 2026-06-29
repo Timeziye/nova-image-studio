@@ -72,6 +72,9 @@ export type CanvasNodeMetadata = {
   generationStartedAt?: number;
   /** 画布导入流程中的节点角色，用于空目标图节点也能被编排节点 @ 引用。 */
   canvasRole?: "reference" | "target" | "reference-prompt";
+  /** 从素材库文件夹批量导入时记录来源文件夹，便于编排 @ 引用展示。 */
+  assetFolderId?: string;
+  assetFolderName?: string;
 };
 
 export type CanvasNodeData = {

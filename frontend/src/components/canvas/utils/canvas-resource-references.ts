@@ -1,11 +1,13 @@
 import { imageReferenceLabel } from "../lib/image-reference-prompt";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../types";
 
-export type CanvasResourceKind = "image" | "text";
+export type CanvasResourceKind = "image" | "text" | "image-group";
+type CanvasNodeResourceKind = Exclude<CanvasResourceKind, "image-group">;
 
 export type CanvasResourceReference = {
   id: string;
   nodeId: string;
+  token: string;
   kind: CanvasResourceKind;
   label: string;
   title: string;
@@ -22,7 +24,7 @@ export function buildCanvasResourceReferences(nodes: CanvasNodeData[], connectio
 }
 
 export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[], imageUrls?: Record<string, string>) {
-  return labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true, imageUrls);
+  return withAllImagesReference(labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true, imageUrls));
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
@@ -56,7 +58,7 @@ function getConnectedConfigResourceNodes(nodeId: string, nodes: CanvasNodeData[]
 }
 
 function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?: Record<string, string>) {
-  const counts: Record<CanvasResourceKind, number> = { image: 0, text: 0 };
+  const counts: Record<CanvasNodeResourceKind, number> = { image: 0, text: 0 };
   return nodes.flatMap((node): CanvasResourceReference[] => {
     const kind = resourceKind(node);
     if (!kind) return [];
@@ -69,6 +71,7 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?
       {
         id: node.id,
         nodeId: node.id,
+        token: `node:${node.id}`,
         kind,
         label,
         title: fallbackLabel,
@@ -80,7 +83,25 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?
   });
 }
 
+function withAllImagesReference(references: CanvasResourceReference[]) {
+  const activeImages = references.filter((reference) => reference.active && reference.kind === "image");
+  if (activeImages.length <= 1) return references;
+  return [
+    {
+      id: "all-images",
+      nodeId: "all-images",
+      token: "all-images",
+      kind: "image-group" as const,
+      label: "所有图片",
+      title: `${activeImages.length} 张上游图片`,
+      active: true,
+    },
+    ...references,
+  ];
+}
+
 function labelForKind(kind: CanvasResourceKind, index: number) {
+  if (kind === "image-group") return "所有图片";
   if (kind === "image") return imageReferenceLabel(index);
   return `文本${index + 1}`;
 }
@@ -89,7 +110,7 @@ function isResourceNode(node: CanvasNodeData) {
   return Boolean(resourceKind(node));
 }
 
-function resourceKind(node: CanvasNodeData): CanvasResourceKind | null {
+function resourceKind(node: CanvasNodeData): CanvasNodeResourceKind | null {
   if (node.type === CanvasNodeType.Image && (node.metadata?.content || node.metadata?.storageKey)) return "image";
   if (node.type === CanvasNodeType.Image && node.metadata?.canvasRole === "target") return "image";
   if (node.type === CanvasNodeType.Text && (node.metadata?.content || node.metadata?.prompt)) return "text";

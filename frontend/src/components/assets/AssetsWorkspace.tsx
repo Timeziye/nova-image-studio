@@ -42,6 +42,7 @@ import {
   addTextAsset,
   createAssetFolder,
   deleteAsset,
+  findOrCreateAssetFolder,
   formatAssetSize,
   getAssetBlob,
   getAssetThumbnailBlob,
@@ -203,6 +204,12 @@ function compareFoldersBySort(a: AssetFolder, b: AssetFolder, sort: AssetSort): 
   return compareText(a.name, b.name);
 }
 
+function getFileFolderName(file: File): string {
+  const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+  const [folderName] = relativePath.split('/').filter(Boolean);
+  return folderName || '';
+}
+
 function matchesAsset(asset: AssetItem, query: string, tag: string, source: string): boolean {
   if (tag === PROMPT_TAG && !isTextAsset(asset)) return false;
   if (tag && tag !== PROMPT_TAG && (!isImageAsset(asset) || !asset.tags.includes(tag))) return false;
@@ -361,6 +368,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
   const fullObjectUrlsRef = useRef<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const tagDragRef = useRef({ pointerId: -1, startX: 0, scrollLeft: 0, dragged: false });
 
   const revokeFullObjectUrls = useCallback(() => {
@@ -438,6 +446,13 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   }, [active, revokeFullObjectUrls]);
 
   useEffect(() => () => revokeFullObjectUrls(), [revokeFullObjectUrls]);
+
+  useEffect(() => {
+    const input = folderInputRef.current;
+    if (!input) return;
+    input.setAttribute('webkitdirectory', '');
+    input.setAttribute('directory', '');
+  }, []);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
@@ -523,6 +538,39 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       setImporting(false);
     }
   }, [reload, selectedFolderId]);
+
+  const handleImportFolder = useCallback(async (files: FileList | File[]) => {
+    const images = Array.from(files).filter(file => file.type.startsWith('image/'));
+    if (images.length === 0) {
+      dispatchImageActionToast('请选择包含图片的文件夹', 'error');
+      return;
+    }
+    const folderName = getFileFolderName(images[0]) || `导入文件夹-${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}`;
+    setImporting(true);
+    try {
+      const folder = await findOrCreateAssetFolder(folderName);
+      let imported = 0;
+      for (const file of images) {
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        await addImageAsset({
+          blob: file,
+          name: file.name,
+          folderId: folder.id,
+          sourceKind: 'manual',
+          sourceLabel: `文件夹导入：${folder.name}`,
+          sourceRef: relativePath,
+        });
+        imported++;
+      }
+      setSelectedFolderId(folder.id);
+      await reload();
+      dispatchImageActionToast(`已导入文件夹 ${folder.name}：${imported} 张图片`, 'success');
+    } catch (error) {
+      dispatchImageActionToast(error instanceof Error ? error.message : '导入文件夹失败', 'error');
+    } finally {
+      setImporting(false);
+    }
+  }, [reload]);
 
   const saveTextAsset = useCallback(async () => {
     try {
@@ -869,9 +917,24 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
               event.target.value = '';
             }}
           />
+          <input
+            ref={folderInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={event => {
+              if (event.target.files) void handleImportFolder(event.target.files);
+              event.target.value = '';
+            }}
+          />
           <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={importing} className="gap-1.5">
             {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             导入图片
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => folderInputRef.current?.click()} disabled={importing} className="gap-1.5">
+            {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderInput className="h-3.5 w-3.5" />}
+            导入文件夹
           </Button>
           <Button variant="outline" size="sm" onClick={openCreateFolderDialog} className="gap-1.5">
             <FolderPlus className="h-3.5 w-3.5" />

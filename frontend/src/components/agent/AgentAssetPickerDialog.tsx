@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Check, FileText, Grid3X3, ImageIcon, Loader2, Search, X } from 'lucide-react';
+import { Check, FileText, Folder, FolderInput, Grid3X3, ImageIcon, Loader2, Search, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   getAssetThumbnailBlob,
+  listAssetFolders,
   listImageAssets,
   listTextAssets,
   touchAsset,
+  type AssetFolder,
   type ImageAsset,
   type TextAsset,
 } from '@/lib/asset-store';
@@ -19,8 +21,10 @@ import { cn } from '@/lib/utils';
 interface AgentAssetPickerDialogProps {
   open: boolean;
   maxSelected?: number;
+  allowFolderSelection?: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: (assets: ImageAsset[]) => void;
+  onConfirmFolder?: (folder: AssetFolder, assets: ImageAsset[]) => void;
 }
 
 interface AgentTextAssetPickerDialogProps {
@@ -235,13 +239,17 @@ function calcCols(width: number): number {
 export function AgentAssetPickerDialog({
   open,
   maxSelected = 5,
+  allowFolderSelection = false,
   onOpenChange,
   onConfirm,
+  onConfirmFolder,
 }: AgentAssetPickerDialogProps) {
   const [assets, setAssets] = useState<ImageAsset[]>([]);
+  const [folders, setFolders] = useState<AssetFolder[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState('');
+  const [selectedFolderId, setSelectedFolderId] = useState('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const tagDragRef = useRef({ pointerId: -1, startX: 0, scrollLeft: 0, dragged: false });
@@ -252,21 +260,23 @@ export function AgentAssetPickerDialog({
     if (!open) return;
     let cancelled = false;
     setLoading(true);
-    void listImageAssets()
-      .then(nextAssets => {
+    void Promise.all([listImageAssets(), allowFolderSelection ? listAssetFolders() : Promise.resolve([])])
+      .then(([nextAssets, nextFolders]) => {
         if (cancelled) return;
         setAssets(nextAssets);
+        setFolders(nextFolders);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [open]);
+  }, [allowFolderSelection, open]);
 
   useEffect(() => {
     if (!open) {
       setQuery('');
       setSelectedTag('');
+      setSelectedFolderId('all');
       setSelectedIds(new Set());
     }
   }, [open]);
@@ -281,11 +291,31 @@ export function AgentAssetPickerDialog({
 
   const filteredAssets = useMemo(
     () => assets.filter(asset => {
+      if (selectedFolderId === 'unfiled' && asset.folderId) return false;
+      if (selectedFolderId !== 'all' && selectedFolderId !== 'unfiled' && asset.folderId !== selectedFolderId) return false;
       if (selectedTag && !asset.tags.includes(selectedTag)) return false;
       return matchesAsset(asset, query);
     }),
-    [assets, query, selectedTag],
+    [assets, query, selectedFolderId, selectedTag],
   );
+
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    counts.set('all', assets.length);
+    counts.set('unfiled', assets.filter(asset => !asset.folderId).length);
+    for (const folder of folders) counts.set(folder.id, assets.filter(asset => asset.folderId === folder.id).length);
+    return counts;
+  }, [assets, folders]);
+
+  const selectedFolder = useMemo(
+    () => folders.find(folder => folder.id === selectedFolderId) || null,
+    [folders, selectedFolderId],
+  );
+  const selectedFolderAssets = useMemo(
+    () => selectedFolder ? assets.filter(asset => asset.folderId === selectedFolder.id) : [],
+    [assets, selectedFolder],
+  );
+  const canConfirmFolder = Boolean(allowFolderSelection && selectedFolder && selectedFolderAssets.length > 0);
 
   const selectedAssets = useMemo(
     () => assets.filter(asset => selectedIds.has(asset.id)),
@@ -349,6 +379,12 @@ export function AgentAssetPickerDialog({
     onOpenChange(false);
   }, [onConfirm, onOpenChange, selectedAssets]);
 
+  const handleConfirmFolder = useCallback(() => {
+    if (!selectedFolder || selectedFolderAssets.length === 0 || !onConfirmFolder) return;
+    onConfirmFolder(selectedFolder, selectedFolderAssets);
+    onOpenChange(false);
+  }, [onConfirmFolder, onOpenChange, selectedFolder, selectedFolderAssets]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-screen flex-col sm:h-auto sm:max-h-[90dvh] sm:w-full sm:max-w-5xl sm:rounded-xl">
@@ -386,10 +422,43 @@ export function AgentAssetPickerDialog({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             取消
           </Button>
+          {allowFolderSelection && (
+            <Button variant="outline" size="sm" onClick={handleConfirmFolder} disabled={!canConfirmFolder} className="gap-1.5">
+              <FolderInput className="h-3.5 w-3.5" />
+              {selectedFolder ? `导入文件夹 (${selectedFolderAssets.length})` : '导入当前文件夹'}
+            </Button>
+          )}
           <Button size="sm" onClick={handleConfirm} disabled={selectedIds.size === 0}>
             导入选中
           </Button>
         </div>
+
+        {allowFolderSelection && (folders.length > 0 || assets.some(asset => !asset.folderId)) && (
+          <div className="flex gap-1.5 overflow-x-auto border-b pb-2 touch-pan-x select-none overscroll-x-contain [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+            {[
+              { id: 'all', name: '全部', count: folderCounts.get('all') || 0 },
+              { id: 'unfiled', name: '未归档', count: folderCounts.get('unfiled') || 0 },
+              ...folders.map(folder => ({ id: folder.id, name: folder.name, count: folderCounts.get(folder.id) || 0 })),
+            ].map(folder => (
+              <button
+                key={folder.id}
+                type="button"
+                onClick={() => {
+                  setSelectedFolderId(folder.id);
+                  setSelectedIds(new Set());
+                }}
+                className={cn(
+                  'inline-flex min-h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2.5 text-xs leading-tight transition-colors',
+                  selectedFolderId === folder.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+                )}
+              >
+                <Folder className="h-3.5 w-3.5" />
+                <span className="max-w-36 truncate">{folder.name}</span>
+                <span className="opacity-70">{folder.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {allTags.length > 0 && (
           <div

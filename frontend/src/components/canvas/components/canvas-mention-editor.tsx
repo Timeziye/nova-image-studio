@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { FileText, Image as ImageIcon } from "lucide-react";
+import { FileText, Images, Image as ImageIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { CanvasResourceReference } from "../utils/canvas-resource-references";
@@ -22,7 +22,7 @@ type Props = {
 const CHIP_CLASS =
   "mx-0.5 inline-flex items-center gap-0.5 rounded-md bg-primary/15 px-1.5 py-0.5 align-baseline text-[11px] font-medium text-primary ring-1 ring-primary/25";
 const CHIP_REMOVE_CLASS = "grid size-3.5 place-items-center rounded-sm text-primary/70 transition-colors hover:bg-primary/25 hover:text-primary";
-const TOKEN_REGEX = /@\[node:([^\]]+)\]/g;
+const TOKEN_REGEX = /@\[([^\]]+)\]/g;
 const MENTION_TRIGGER = /(^|[\s\u00a0])@([^\s@\u00a0]*)$/;
 
 function escapeHtml(value: string) {
@@ -33,20 +33,20 @@ function textToHtml(value: string) {
   return escapeHtml(value).replace(/\n/g, "<br>");
 }
 
-function chipHtml(id: string, label: string) {
-  return `<span data-mention-id="${escapeHtml(id)}" contenteditable="false" class="${CHIP_CLASS}"><span data-mention-label>${escapeHtml(label)}</span><button type="button" data-mention-remove="${escapeHtml(id)}" class="${CHIP_REMOVE_CLASS}">×</button></span>`;
+function chipHtml(token: string, label: string) {
+  return `<span data-mention-token="${escapeHtml(token)}" contenteditable="false" class="${CHIP_CLASS}"><span data-mention-label>${escapeHtml(label)}</span><button type="button" data-mention-remove="${escapeHtml(token)}" class="${CHIP_REMOVE_CLASS}">×</button></span>`;
 }
 
 /** value(含 @[node:id] token) → 编辑器 innerHTML（token 渲染为带 label 的 chip）。 */
-function valueToHtml(value: string, labelByNodeId: Map<string, string>) {
+function valueToHtml(value: string, labelByToken: Map<string, string>) {
   let html = "";
   let lastIndex = 0;
   TOKEN_REGEX.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = TOKEN_REGEX.exec(value))) {
     html += textToHtml(value.slice(lastIndex, match.index));
-    const id = match[1];
-    html += chipHtml(id, labelByNodeId.get(id) || "已失效");
+    const token = match[1];
+    html += chipHtml(token, labelByToken.get(token) || "已失效");
     lastIndex = match.index + match[0].length;
   }
   html += textToHtml(value.slice(lastIndex));
@@ -57,7 +57,7 @@ function serializeNode(node: ChildNode): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
   if (node.nodeType !== Node.ELEMENT_NODE) return "";
   const el = node as HTMLElement;
-  if (el.dataset.mentionId) return `@[node:${el.dataset.mentionId}]`;
+  if (el.dataset.mentionToken) return `@[${el.dataset.mentionToken}]`;
   if (el.tagName === "BR") return "\n";
   let inner = "";
   el.childNodes.forEach((child) => {
@@ -75,9 +75,9 @@ function serializeEditor(root: HTMLElement): string {
   return out;
 }
 
-function createChip(id: string, label: string) {
+function createChip(token: string, label: string) {
   const span = document.createElement("span");
-  span.dataset.mentionId = id;
+  span.dataset.mentionToken = token;
   span.contentEditable = "false";
   span.className = CHIP_CLASS;
   const labelEl = document.createElement("span");
@@ -85,7 +85,7 @@ function createChip(id: string, label: string) {
   labelEl.textContent = label;
   const removeEl = document.createElement("button");
   removeEl.type = "button";
-  removeEl.dataset.mentionRemove = id;
+  removeEl.dataset.mentionRemove = token;
   removeEl.className = CHIP_REMOVE_CLASS;
   removeEl.textContent = "×";
   span.append(labelEl, removeEl);
@@ -130,11 +130,11 @@ function getTextInputContext(root: HTMLElement): { textNode: Text; offset: numbe
 export function CanvasMentionEditor({ value, references, onChange, onSubmit, placeholder, className }: Props) {
   const editorRef = useRef<HTMLDivElement>(null);
   const lastValueRef = useRef<string>("__canvas_init__");
-  const labelByNodeIdRef = useRef<Map<string, string>>(new Map());
+  const labelByTokenRef = useRef<Map<string, string>>(new Map());
   const [mention, setMention] = useState<MentionState | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  const labelByNodeId = useMemo(() => new Map(references.map((item) => [item.nodeId, item.label])), [references]);
+  const labelByToken = useMemo(() => new Map(references.map((item) => [item.token, item.label])), [references]);
   const activeReferences = useMemo(() => references.filter((item) => item.active), [references]);
   const candidates = useMemo(() => {
     if (!mention) return [];
@@ -144,15 +144,15 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
   }, [mention, activeReferences]);
 
   useEffect(() => {
-    labelByNodeIdRef.current = labelByNodeId;
-  }, [labelByNodeId]);
+    labelByTokenRef.current = labelByToken;
+  }, [labelByToken]);
 
   // 外部 value 变化（初始化 / 切换 / 程序化清空）时重建 DOM；用户输入不在此重建（避免光标跳动）。
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
     if (value === lastValueRef.current) return;
-    el.innerHTML = valueToHtml(value, labelByNodeIdRef.current);
+    el.innerHTML = valueToHtml(value, labelByTokenRef.current);
     lastValueRef.current = value;
   }, [value]);
 
@@ -160,14 +160,14 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
-    el.querySelectorAll<HTMLElement>("[data-mention-id]").forEach((span) => {
-      const id = span.dataset.mentionId;
-      if (!id) return;
+    el.querySelectorAll<HTMLElement>("[data-mention-token]").forEach((span) => {
+      const token = span.dataset.mentionToken;
+      if (!token) return;
       const labelEl = span.querySelector<HTMLElement>("[data-mention-label]");
-      const label = labelByNodeId.get(id) || "已失效";
+      const label = labelByToken.get(token) || "已失效";
       if (labelEl && labelEl.textContent !== label) labelEl.textContent = label;
     });
-  }, [labelByNodeId]);
+  }, [labelByToken]);
 
   const closeMention = useCallback(() => {
     setMention(null);
@@ -224,7 +224,7 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
       const atIndex = offset - match[2].length - 1;
       textNode.deleteData(atIndex, match[2].length + 1);
       const tail = textNode.splitText(atIndex);
-      const chip = createChip(reference.nodeId, reference.label);
+      const chip = createChip(reference.token, reference.label);
       const spacer = document.createTextNode(" ");
       tail.parentNode?.insertBefore(chip, tail);
       tail.parentNode?.insertBefore(spacer, tail);
@@ -240,10 +240,10 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
   );
 
   const removeChip = useCallback(
-    (id: string) => {
+    (token: string) => {
       const el = editorRef.current;
       if (!el) return;
-      el.querySelector<HTMLElement>(`[data-mention-id="${CSS.escape(id)}"]`)?.remove();
+      el.querySelector<HTMLElement>(`[data-mention-token="${CSS.escape(token)}"]`)?.remove();
       emitChange();
       el.focus();
     },
@@ -290,10 +290,10 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
           let chip: HTMLElement | null = null;
           if (node.nodeType === Node.TEXT_NODE && range.startOffset === 0) {
             const prev = node.previousSibling as HTMLElement | null;
-            if (prev?.dataset?.mentionId) chip = prev;
+            if (prev?.dataset?.mentionToken) chip = prev;
           } else if (node === editorRef.current && range.startOffset > 0) {
             const prev = editorRef.current.childNodes[range.startOffset - 1] as HTMLElement | null;
-            if (prev?.dataset?.mentionId) chip = prev;
+            if (prev?.dataset?.mentionToken) chip = prev;
           }
           if (chip) {
             event.preventDefault();
@@ -381,7 +381,7 @@ function MentionMenu({ rect, references, activeIndex, onSelect }: { rect: DOMRec
 
 function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
   if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md object-cover" />;
-  const Icon = reference.kind === "image" ? ImageIcon : FileText;
+  const Icon = reference.kind === "image-group" ? Images : reference.kind === "image" ? ImageIcon : FileText;
   return (
     <span className="grid size-9 shrink-0 place-items-center rounded-md bg-muted">
       <Icon className="size-4" />
