@@ -23,7 +23,7 @@ interface AgentAssetPickerDialogProps {
   maxSelected?: number;
   allowFolderSelection?: boolean;
   onOpenChange: (open: boolean) => void;
-  onConfirm: (assets: ImageAsset[]) => void;
+  onConfirm: (assets: ImageAsset[], options?: { mergeIntoGallery: boolean }) => void;
   onConfirmFolder?: (folder: AssetFolder, assets: ImageAsset[]) => void;
 }
 
@@ -251,6 +251,7 @@ export function AgentAssetPickerDialog({
   const [selectedTag, setSelectedTag] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mergeIntoGallery, setMergeIntoGallery] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const tagDragRef = useRef({ pointerId: -1, startX: 0, scrollLeft: 0, dragged: false });
   const [cols, setCols] = useState<number>(COLS.mobile);
@@ -278,6 +279,7 @@ export function AgentAssetPickerDialog({
       setSelectedTag('');
       setSelectedFolderId('all');
       setSelectedIds(new Set());
+      setMergeIntoGallery(true);
     }
   }, [open]);
 
@@ -315,6 +317,16 @@ export function AgentAssetPickerDialog({
     () => selectedFolder ? assets.filter(asset => asset.folderId === selectedFolder.id) : [],
     [assets, selectedFolder],
   );
+  const currentFolderAssets = useMemo(() => {
+    if (selectedFolderId === 'all') return filteredAssets;
+    if (selectedFolderId === 'unfiled') return assets.filter(asset => !asset.folderId);
+    return selectedFolderAssets;
+  }, [assets, filteredAssets, selectedFolderAssets, selectedFolderId]);
+  const selectedCurrentFolderCount = useMemo(
+    () => currentFolderAssets.filter(asset => selectedIds.has(asset.id)).length,
+    [currentFolderAssets, selectedIds],
+  );
+  const allCurrentFolderSelected = currentFolderAssets.length > 0 && selectedCurrentFolderCount === currentFolderAssets.length;
   const canConfirmFolder = Boolean(allowFolderSelection && selectedFolder && selectedFolderAssets.length > 0);
 
   const selectedAssets = useMemo(
@@ -360,6 +372,8 @@ export function AgentAssetPickerDialog({
     rowVirtualizer.measure();
   }, [cols, filteredAssets.length, rowVirtualizer]);
 
+  const selectionLimit = Math.max(1, maxSelected);
+
   const toggleAsset = useCallback((assetId: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -367,17 +381,34 @@ export function AgentAssetPickerDialog({
         next.delete(assetId);
         return next;
       }
-      if (next.size >= maxSelected) return next;
+      if (next.size >= selectionLimit) return next;
       next.add(assetId);
       return next;
     });
-  }, [maxSelected]);
+  }, [selectionLimit]);
+
+  const toggleSelectCurrentFolder = useCallback(() => {
+    if (!currentFolderAssets.length) return;
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      const shouldClear = currentFolderAssets.every(asset => next.has(asset.id));
+      if (shouldClear) {
+        for (const asset of currentFolderAssets) next.delete(asset.id);
+        return next;
+      }
+      for (const asset of currentFolderAssets) {
+        if (next.size >= selectionLimit) break;
+        next.add(asset.id);
+      }
+      return next;
+    });
+  }, [currentFolderAssets, selectionLimit]);
 
   const handleConfirm = useCallback(() => {
     if (selectedAssets.length === 0) return;
-    onConfirm(selectedAssets);
+    onConfirm(selectedAssets, { mergeIntoGallery });
     onOpenChange(false);
-  }, [onConfirm, onOpenChange, selectedAssets]);
+  }, [mergeIntoGallery, onConfirm, onOpenChange, selectedAssets]);
 
   const handleConfirmFolder = useCallback(() => {
     if (!selectedFolder || selectedFolderAssets.length === 0 || !onConfirmFolder) return;
@@ -434,29 +465,34 @@ export function AgentAssetPickerDialog({
         </div>
 
         {allowFolderSelection && (folders.length > 0 || assets.some(asset => !asset.folderId)) && (
-          <div className="flex gap-1.5 overflow-x-auto border-b pb-2 touch-pan-x select-none overscroll-x-contain [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
-            {[
-              { id: 'all', name: '全部', count: folderCounts.get('all') || 0 },
-              { id: 'unfiled', name: '未归档', count: folderCounts.get('unfiled') || 0 },
-              ...folders.map(folder => ({ id: folder.id, name: folder.name, count: folderCounts.get(folder.id) || 0 })),
-            ].map(folder => (
-              <button
-                key={folder.id}
-                type="button"
-                onClick={() => {
-                  setSelectedFolderId(folder.id);
-                  setSelectedIds(new Set());
-                }}
-                className={cn(
-                  'inline-flex min-h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2.5 text-xs leading-tight transition-colors',
-                  selectedFolderId === folder.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
-                )}
-              >
-                <Folder className="h-3.5 w-3.5" />
-                <span className="max-w-36 truncate">{folder.name}</span>
-                <span className="opacity-70">{folder.count}</span>
-              </button>
-            ))}
+          <div className="flex items-center gap-2 border-b pb-2">
+            <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto touch-pan-x select-none overscroll-x-contain [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+              {[
+                { id: 'all', name: '全部', count: folderCounts.get('all') || 0 },
+                { id: 'unfiled', name: '未归档', count: folderCounts.get('unfiled') || 0 },
+                ...folders.map(folder => ({ id: folder.id, name: folder.name, count: folderCounts.get(folder.id) || 0 })),
+              ].map(folder => (
+                <button
+                  key={folder.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedFolderId(folder.id);
+                    setSelectedIds(new Set());
+                  }}
+                  className={cn(
+                    'inline-flex min-h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2.5 text-xs leading-tight transition-colors',
+                    selectedFolderId === folder.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+                  )}
+                >
+                  <Folder className="h-3.5 w-3.5" />
+                  <span className="max-w-36 truncate">{folder.name}</span>
+                  <span className="opacity-70">{folder.count}</span>
+                </button>
+              ))}
+            </div>
+            <Button variant="outline" size="sm" onClick={toggleSelectCurrentFolder} disabled={currentFolderAssets.length === 0}>
+              {allCurrentFolderSelected ? '取消全选' : `全选 (${currentFolderAssets.length})`}
+            </Button>
           </div>
         )}
 
@@ -511,6 +547,21 @@ export function AgentAssetPickerDialog({
           </div>
         )}
 
+        {allowFolderSelection && selectionLimit > 1 && (
+          <label className="flex min-h-8 items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2 text-xs">
+            <span className="min-w-0">
+              <span className="block font-medium text-foreground">合并显示</span>
+              <span className="block text-muted-foreground">关闭后，选中的图片会分别导入为多个图片节点。</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={mergeIntoGallery}
+              onChange={(event) => setMergeIntoGallery(event.target.checked)}
+              className="h-4 w-4 shrink-0 accent-primary"
+            />
+          </label>
+        )}
+
         {loading ? (
           <div className="flex min-h-48 items-center justify-center text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -546,7 +597,7 @@ export function AgentAssetPickerDialog({
                     <div className="grid gap-2 pb-2" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
                       {rowItems.map(asset => {
                         const selected = selectedIds.has(asset.id);
-                        const disabled = !selected && selectedIds.size >= maxSelected;
+                        const disabled = !selected && selectedIds.size >= selectionLimit;
                         return (
                           <button
                             key={asset.id}

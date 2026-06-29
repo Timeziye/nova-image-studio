@@ -1,6 +1,6 @@
 import { imageReferenceLabel } from "../lib/image-reference-prompt";
 import type { ReferenceImage } from "../types-media";
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../types";
+import { CanvasNodeType, type CanvasConnection, type CanvasGalleryImage, type CanvasNodeData } from "../types";
 import { getGenerationResourceNodes } from "../utils/canvas-resource-references";
 
 export type NodeGenerationContext = {
@@ -12,6 +12,7 @@ export type NodeGenerationContext = {
 
 export type NodeGenerationInput = {
   nodeId: string;
+  resourceToken: string;
   type: "text" | "image";
   title: string;
   text?: string;
@@ -40,9 +41,15 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
 }
 
 function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: string): NodeGenerationContext {
-  const inputByNodeId = new Map(inputs.map((input) => [input.nodeId, input]));
+  const inputsByNodeId = new Map<string, NodeGenerationInput[]>();
+  for (const input of inputs) {
+    const list = inputsByNodeId.get(input.nodeId) || [];
+    list.push(input);
+    inputsByNodeId.set(input.nodeId, list);
+  }
+  const inputByToken = new Map(inputs.map((input) => [input.resourceToken, input]));
   const selectedInputs: NodeGenerationInput[] = [];
-  const labelByNodeId = new Map<string, string>();
+  const labelByToken = new Map<string, string>();
   const textBlocks: string[] = [];
   const counts = { image: 0, text: 0 };
   let hasToken = false;
@@ -50,10 +57,10 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
   let nextPrompt = "";
 
   const addInput = (input: NodeGenerationInput) => {
-    let label = labelByNodeId.get(input.nodeId);
+    let label = labelByToken.get(input.resourceToken);
     if (!label) {
       label = input.title.trim() || generationLabel(input.type, counts[input.type]++);
-      labelByNodeId.set(input.nodeId, label);
+      labelByToken.set(input.resourceToken, label);
       if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
       else selectedInputs.push(input);
     }
@@ -70,11 +77,15 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
         .filter((input) => input.type === "image")
         .map(addInput);
       if (labels.length) nextPrompt += `所有图片（${labels.join("、")}）`;
+    } else if (token.startsWith("node-image:")) {
+      const input = inputByToken.get(token);
+      if (input) nextPrompt += addInput(input);
     } else if (token.startsWith("node:")) {
-      const input = inputByNodeId.get(token.slice("node:".length));
-      if (input) {
-        const label = addInput(input);
-        nextPrompt += input.type === "text" ? `【${label}】` : label;
+      const nodeInputs = inputsByNodeId.get(token.slice("node:".length)) || [];
+      if (nodeInputs.length) {
+        const labels = nodeInputs.map(addInput);
+        const first = nodeInputs[0];
+        nextPrompt += first.type === "text" ? `【${labels[0]}】` : labels.length > 1 ? `${first.title || "图片集合"}（${labels.join("、")}）` : labels[0];
       }
     }
     lastIndex = match.index + match[0].length;
@@ -103,10 +114,22 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
 
 export function buildNodeGenerationInputs(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationInput[] {
   return getGenerationResourceNodes(nodeId, nodes, connections).flatMap((node): NodeGenerationInput[] => {
+    if (node.type === CanvasNodeType.Image && node.metadata?.galleryImages?.length) {
+      return node.metadata.galleryImages.flatMap((image, index): NodeGenerationInput[] => {
+        const reference = readGalleryReferenceImage(node, image, index);
+        return reference ? [{
+          nodeId: node.id,
+          resourceToken: `node-image:${node.id}:${image.id}`,
+          type: "image" as const,
+          title: `${node.title || "图片集合"} / ${imageReferenceLabel(index)}`,
+          image: reference,
+        }] : [];
+      });
+    }
     const image = readReferenceImage(node);
-    if (image) return [{ nodeId: node.id, type: "image" as const, title: node.title, image }];
+    if (image) return [{ nodeId: node.id, resourceToken: `node:${node.id}`, type: "image" as const, title: node.title, image }];
     const text = readNodeTextInput(node);
-    if (text) return [{ nodeId: node.id, type: "text" as const, title: node.title, text }];
+    if (text) return [{ nodeId: node.id, resourceToken: `node:${node.id}`, type: "text" as const, title: node.title, text }];
     return [];
   });
 }
@@ -134,5 +157,16 @@ function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
     type: node.metadata.mimeType || "image/png",
     dataUrl: node.metadata.content || "",
     storageKey: node.metadata.storageKey,
+  };
+}
+
+function readGalleryReferenceImage(node: CanvasNodeData, image: CanvasGalleryImage, index: number): ReferenceImage | null {
+  if (!image.content && !image.storageKey) return null;
+  return {
+    id: image.id || `${node.id}-${index}`,
+    name: image.name || `${node.title || node.id}-${index + 1}.png`,
+    type: image.mimeType || "image/png",
+    dataUrl: image.content || "",
+    storageKey: image.storageKey,
   };
 }

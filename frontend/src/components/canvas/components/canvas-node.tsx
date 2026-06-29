@@ -23,6 +23,7 @@ const STATUS_LABELS: Record<string, string> = {
 type CanvasNodeProps = {
   data: CanvasNodeData;
   imageUrl?: string;
+  galleryImageUrls?: string[];
   isSelected: boolean;
   isRelated: boolean;
   isConnectionTarget: boolean;
@@ -55,6 +56,7 @@ type CanvasNodeProps = {
 export const CanvasNode = React.memo(function CanvasNode({
   data,
   imageUrl,
+  galleryImageUrls,
   isSelected,
   isRelated,
   isConnectionTarget,
@@ -130,7 +132,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
         <div className="relative min-h-0 flex-1">
           {data.type === CanvasNodeType.Image ? (
-            <ImageNodeBody data={data} imageUrl={imageUrl} status={status} showImageInfo={showImageInfo} onUploadToNode={onUploadToNode} onImportToNode={onImportToNode} onSaveToAssets={onSaveToAssets} onRetry={onRetry} onRefreshProgress={onRefreshProgress} onOpenImage={onOpenImage} />
+            <ImageNodeBody data={data} imageUrl={imageUrl} galleryImageUrls={galleryImageUrls} status={status} showImageInfo={showImageInfo} onUploadToNode={onUploadToNode} onImportToNode={onImportToNode} onSaveToAssets={onSaveToAssets} onRetry={onRetry} onRefreshProgress={onRefreshProgress} onOpenImage={onOpenImage} />
           ) : data.type === CanvasNodeType.Text ? (
             <TextNodeBody data={data} onContentChange={onContentChange} onSelectNode={onSelectNode} onImportTextToNode={onImportTextToNode} onSaveTextToAssets={onSaveTextToAssets} />
           ) : (
@@ -206,6 +208,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 function ImageNodeBody({
   data,
   imageUrl,
+  galleryImageUrls,
   status,
   showImageInfo,
   onUploadToNode,
@@ -217,6 +220,7 @@ function ImageNodeBody({
 }: {
   data: CanvasNodeData;
   imageUrl?: string;
+  galleryImageUrls?: string[];
   status: string;
   showImageInfo: boolean;
   onUploadToNode?: (nodeId: string) => void;
@@ -229,13 +233,46 @@ function ImageNodeBody({
   const fallbackContent = data.metadata?.content;
   // 不渲染刷新后失效的 blob: URL（避免 ERR_FILE_NOT_FOUND）；由上层 imageUrl（storageKey 解析）提供有效地址
   const url = imageUrl || (fallbackContent && !fallbackContent.startsWith("blob:") ? fallbackContent : undefined);
+  const galleryImages = data.metadata?.galleryImages || [];
+  const hasGallery = galleryImages.length > 0;
   const isGenerating = status === "submitting" || status === "queued" || status === "processing";
   const isError = status === "error";
 
   return (
     <div className="relative h-full w-full">
       {/* 有图片时显示图片 */}
-      {url && (
+      {hasGallery ? (
+        <button
+          type="button"
+          className="relative grid h-full w-full gap-1 bg-muted/30 p-2"
+          style={{ gridTemplateColumns: `repeat(${galleryColumns(galleryImages.length)}, minmax(0, 1fr))` }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            onOpenImage?.(data);
+          }}
+          title={`${data.title} · ${galleryImages.length} 张图片`}
+        >
+          {galleryImages.slice(0, 24).map((image, index) => {
+            const thumbUrl = galleryImageUrls?.[index] || (image.content && !image.content.startsWith("blob:") ? image.content : undefined);
+            return (
+              <span key={image.id || `${image.name}-${index}`} className="relative min-h-0 min-w-0 overflow-hidden rounded-md bg-background shadow-sm ring-1 ring-border">
+                {thumbUrl ? (
+                  <img src={thumbUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+                ) : (
+                  <span className="grid h-full w-full place-items-center text-muted-foreground">
+                    <Images className="size-4 opacity-60" />
+                  </span>
+                )}
+              </span>
+            );
+          })}
+          {galleryImages.length > 24 && (
+            <span className="absolute right-2 bottom-2 rounded-md bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">
+              +{galleryImages.length - 24}
+            </span>
+          )}
+        </button>
+      ) : url && (
         <img
           src={url}
           alt={data.title}
@@ -249,7 +286,7 @@ function ImageNodeBody({
       )}
 
       {/* 空状态：无图片且不在生成中 */}
-      {!url && !isGenerating && !isError && (
+      {!hasGallery && !url && !isGenerating && !isError && (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-3 text-center text-muted-foreground" data-canvas-no-zoom>
           <Images className="size-6 opacity-70" />
           <p className="max-w-[15rem] text-[11px] leading-snug">该节点可作为参考图或目标图节点</p>
@@ -279,7 +316,7 @@ function ImageNodeBody({
       {isGenerating && <GenerationStatusOverlay data={data} status={status} onRefreshProgress={onRefreshProgress} />}
 
       {/* 存素材按钮（仅在有图片且非生成中时显示） */}
-      {url && !isGenerating && onSaveToAssets && (
+      {(url || hasGallery) && !isGenerating && onSaveToAssets && (
         <button
           type="button"
           data-canvas-no-zoom
@@ -293,7 +330,7 @@ function ImageNodeBody({
       )}
 
       {/* 图片信息（尺寸/大小） */}
-      {url && !isGenerating && showImageInfo && (data.metadata?.naturalWidth || data.metadata?.bytes) && (
+      {!hasGallery && url && !isGenerating && showImageInfo && (data.metadata?.naturalWidth || data.metadata?.bytes) && (
         <div className="pointer-events-none absolute bottom-1 left-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
           {data.metadata?.naturalWidth ? `${data.metadata.naturalWidth}×${data.metadata.naturalHeight}` : ""} {data.metadata?.bytes ? formatBytes(data.metadata.bytes) : ""}
         </div>
@@ -349,6 +386,14 @@ function NodeTitleInput({
       className="h-5 min-w-0 flex-1 rounded-md border border-primary/45 bg-background/90 px-1.5 text-[11px] font-medium text-foreground outline-none ring-2 ring-primary/15"
     />
   );
+}
+
+function galleryColumns(count: number) {
+  if (count <= 1) return 1;
+  if (count <= 4) return 2;
+  if (count <= 9) return 3;
+  if (count <= 16) return 4;
+  return 5;
 }
 
 function GenerationStatusOverlay({ data, status, onRefreshProgress }: { data: CanvasNodeData; status: string; onRefreshProgress?: (node: CanvasNodeData) => void | Promise<void> }) {

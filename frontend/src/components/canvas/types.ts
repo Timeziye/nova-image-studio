@@ -62,6 +62,7 @@ export type CanvasNodeMetadata = {
   storageKey?: string;
   mimeType?: string;
   bytes?: number;
+  galleryImages?: CanvasGalleryImage[];
   /** 配置节点的逐节点生成参数 */
   genConfig?: CanvasGenerationConfig;
   /** 配置节点：锁定结果节点模式 */
@@ -75,6 +76,18 @@ export type CanvasNodeMetadata = {
   /** 从素材库文件夹批量导入时记录来源文件夹，便于编排 @ 引用展示。 */
   assetFolderId?: string;
   assetFolderName?: string;
+};
+
+export type CanvasGalleryImage = {
+  id: string;
+  name: string;
+  content?: string;
+  storageKey?: string;
+  mimeType?: string;
+  naturalWidth?: number;
+  naturalHeight?: number;
+  bytes?: number;
+  prompt?: string;
 };
 
 export type CanvasNodeData = {

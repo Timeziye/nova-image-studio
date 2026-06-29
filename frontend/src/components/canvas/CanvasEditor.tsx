@@ -32,7 +32,7 @@ import { fitNodeSize } from "./utils/canvas-node-size";
 import { getImageBlob, imageToDataUrl, resolveImageUrl, uploadImage, type UploadedImage } from "./lib/image-storage";
 import { imageReferenceLabel } from "./lib/image-reference-prompt";
 import { compressReferenceDataUrl, readFileAsDataUrl } from "./lib/image-utils";
-import { CanvasNodeType, type CanvasConnection, type CanvasGenerationConfig, type CanvasNodeData, type CanvasNodeMetadata, type ContextMenuState, type ConnectionHandle, type Position, type SelectionBox, type ViewportTransform } from "./types";
+import { CanvasNodeType, type CanvasConnection, type CanvasGalleryImage, type CanvasGenerationConfig, type CanvasNodeData, type CanvasNodeMetadata, type ContextMenuState, type ConnectionHandle, type Position, type SelectionBox, type ViewportTransform } from "./types";
 import type { ReferenceImage } from "./types-media";
 import { PromptOptimizeDialog } from "@/components/PromptOptimizeDialog";
 import { streamPromptOptimize, type StreamPromptOptimizeHandle, type OptimizeImageInput } from "@/lib/prompt-optimize-client";
@@ -111,6 +111,20 @@ function buildPromptGalleryCanvasPrompt(referenceImageCount: number) {
 
 function storedToMetadata(stored: UploadedImage | CanvasGeneratedImage, extra?: Partial<CanvasNodeMetadata>): CanvasNodeMetadata {
   return { status: "success", content: stored.url, storageKey: stored.storageKey, mimeType: stored.mimeType, naturalWidth: stored.width, naturalHeight: stored.height, bytes: stored.bytes, ...extra };
+}
+
+function storedToGalleryImage(stored: UploadedImage, asset: ImageAsset): CanvasGalleryImage {
+  return {
+    id: asset.id,
+    name: asset.name,
+    content: stored.url,
+    storageKey: stored.storageKey,
+    mimeType: stored.mimeType,
+    naturalWidth: stored.width,
+    naturalHeight: stored.height,
+    bytes: stored.bytes,
+    prompt: asset.prompt,
+  };
 }
 
 async function importPromptGalleryImage(url: string, promptContent: string) {
@@ -239,14 +253,24 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   // ---- resolve image blob URLs for nodes that only have a storageKey ----
   useEffect(() => {
     let cancelled = false;
-    const missing = nodes.filter((node) => node.type === CanvasNodeType.Image && node.metadata?.storageKey && !imageUrls[node.metadata.storageKey]);
-    if (!missing.length) return;
-    void Promise.all(
-      missing.map(async (node) => {
-        const key = node.metadata!.storageKey!;
-        // 持久化的 blob: URL 刷新后已失效，不能作为兜底（否则写回后仍 404）；优先从 IndexedDB 重建
+    const missingKeys = new Map<string, string>();
+    for (const node of nodes) {
+      if (node.type !== CanvasNodeType.Image) continue;
+      if (node.metadata?.storageKey && !imageUrls[node.metadata.storageKey]) {
         const content = node.metadata?.content;
-        const fallback = content && !content.startsWith("blob:") ? content : "";
+        missingKeys.set(node.metadata.storageKey, content && !content.startsWith("blob:") ? content : "");
+      }
+      for (const image of node.metadata?.galleryImages || []) {
+        if (image.storageKey && !imageUrls[image.storageKey]) {
+          const content = image.content;
+          missingKeys.set(image.storageKey, content && !content.startsWith("blob:") ? content : "");
+        }
+      }
+    }
+    if (!missingKeys.size) return;
+    void Promise.all(
+      Array.from(missingKeys.entries()).map(async ([key, fallback]) => {
+        // 持久化的 blob: URL 刷新后已失效，不能作为兜底（否则写回后仍 404）；优先从 IndexedDB 重建
         const url = await resolveImageUrl(key, fallback);
         return [key, url] as const;
       }),
@@ -362,6 +386,18 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       setRenameNodeDraft(node.title);
     },
     [nodes],
+  );
+
+  const nodeGalleryImageUrls = useCallback(
+    (node: CanvasNodeData) => {
+      return (node.metadata?.galleryImages || []).map((image) => {
+        if (image.storageKey && imageUrls[image.storageKey]) return imageUrls[image.storageKey];
+        const content = image.content;
+        if (content && !content.startsWith("blob:")) return content;
+        return "";
+      });
+    },
+    [imageUrls],
   );
 
   const commitRenameNode = useCallback(() => {
@@ -482,7 +518,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       pushHistory();
       const size = fitNodeSize(stored.width, stored.height, 360, 360);
       const nextTitle = title?.trim();
-      patchNode(nodeId, (node) => ({ ...node, title: nextTitle || node.title, width: size.width, height: size.height, metadata: { ...node.metadata, ...storedToMetadata(stored) } }));
+      patchNode(nodeId, (node) => ({ ...node, title: nextTitle || node.title, width: size.width, height: size.height, metadata: { ...node.metadata, ...storedToMetadata(stored), galleryImages: undefined } }));
     },
     [patchNode, pushHistory],
   );
@@ -546,109 +582,152 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   }, []);
 
   const handleAssetPickerConfirm = useCallback(
-    async (assets: ImageAsset[]) => {
+    async (assets: ImageAsset[], options?: { mergeIntoGallery: boolean }) => {
       const targetId = assetPicker.nodeId;
-      const asset = assets[0];
-      if (!asset || !targetId) return;
+      if (!assets.length || !targetId) return;
       try {
-        const blob = await getAssetBlob(asset.id);
-        if (!blob) {
+        const imported: Array<{ asset: ImageAsset; stored: UploadedImage; gallery: CanvasGalleryImage }> = [];
+        for (const asset of assets) {
+          const blob = await getAssetBlob(asset.id);
+          if (!blob) continue;
+          const stored = await uploadImage(blob);
+          imported.push({ asset, stored, gallery: storedToGalleryImage(stored, asset) });
+        }
+        if (!imported.length) {
           showToast("素材读取失败", "error");
           return;
         }
-        const stored = await uploadImage(blob);
-        fillNodeWithConfirm(targetId, stored, asset.name);
+        if (imported.length === 1) {
+          const only = imported[0];
+          fillNodeWithConfirm(targetId, only.stored, only.asset.name);
+          return;
+        }
+        if (options?.mergeIntoGallery === false) {
+          const targetNode = nodes.find((node) => node.id === targetId);
+          const targetHasImage = Boolean(targetNode?.metadata?.content || targetNode?.metadata?.storageKey || targetNode?.metadata?.galleryImages?.length);
+          const base = targetNode ? {
+            x: targetNode.position.x + (targetHasImage ? targetNode.width + 72 : 0),
+            y: targetNode.position.y,
+          } : viewportCenterWorld();
+          const cols = imported.length > 6 ? 3 : 2;
+          const gapX = 360;
+          const gapY = 300;
+          const newNodes: CanvasNodeData[] = [];
+          let targetUpdate: (typeof imported)[number] | null = null;
+          imported.forEach((item, index) => {
+            if (targetNode && !targetHasImage && index === 0) {
+              targetUpdate = item;
+              return;
+            }
+            const adjustedIndex = targetUpdate ? index - 1 : index;
+            const size = fitNodeSize(item.stored.width, item.stored.height, 320, 320);
+            newNodes.push(createImageNode(
+              {
+                x: base.x + (adjustedIndex % cols) * gapX,
+                y: base.y + Math.floor(adjustedIndex / cols) * gapY,
+              },
+              {
+                title: item.asset.name,
+                width: size.width,
+                height: size.height,
+                metadata: storedToMetadata(item.stored, { prompt: item.asset.prompt }),
+              },
+            ));
+          });
+          pushHistory();
+          setNodes((prev) => {
+            const withTarget = targetUpdate && targetNode
+              ? prev.map((node) => {
+                if (node.id !== targetNode.id) return node;
+                const size = fitNodeSize(targetUpdate!.stored.width, targetUpdate!.stored.height, 360, 360);
+                return {
+                  ...node,
+                  title: targetUpdate!.asset.name,
+                  width: size.width,
+                  height: size.height,
+                  metadata: storedToMetadata(targetUpdate!.stored, { prompt: targetUpdate!.asset.prompt }),
+                };
+              })
+              : prev;
+            return [...withTarget, ...newNodes];
+          });
+          setSelectedIds([...(targetUpdate && targetNode ? [targetNode.id] : []), ...newNodes.map((node) => node.id)]);
+          setSelectedConnectionIds([]);
+          showToast(`已导入 ${imported.length} 张图片`, "success");
+          return;
+        }
+        pushHistory();
+        patchNode(targetId, (node) => ({
+          ...node,
+          title: "图片集合",
+          width: Math.max(node.width, 520),
+          height: Math.max(node.height, 360),
+          metadata: {
+            ...node.metadata,
+            status: "success",
+            content: undefined,
+            storageKey: undefined,
+            mimeType: undefined,
+            naturalWidth: undefined,
+            naturalHeight: undefined,
+            bytes: undefined,
+            galleryImages: imported.map((item) => item.gallery),
+          },
+        }));
       } catch {
         showToast("从素材库导入失败", "error");
       }
     },
-    [assetPicker.nodeId, fillNodeWithConfirm, showToast],
+    [assetPicker.nodeId, createImageNode, fillNodeWithConfirm, nodes, patchNode, pushHistory, showToast, viewportCenterWorld],
   );
 
   const handleAssetFolderPickerConfirm = useCallback(
     async (folder: AssetFolder, folderAssets: ImageAsset[]) => {
       if (!folderAssets.length) return;
       const targetId = assetPicker.nodeId;
-      const targetNode = targetId ? nodes.find((node) => node.id === targetId) : undefined;
-      const targetHasImage = Boolean(targetNode?.metadata?.content || targetNode?.metadata?.storageKey);
-      const base = targetNode
-        ? {
-          x: targetNode.position.x + (targetHasImage ? targetNode.width + 72 : 0),
-          y: targetNode.position.y,
-        }
-        : viewportCenterWorld();
-      const cols = folderAssets.length > 6 ? 3 : 2;
-      const gapX = 360;
-      const gapY = 300;
-      const imported: Array<{ asset: ImageAsset; stored: UploadedImage }> = [];
+      if (!targetId) return;
+      const imported: CanvasGalleryImage[] = [];
 
       try {
         for (const asset of folderAssets) {
           const blob = await getAssetBlob(asset.id);
           if (!blob) continue;
-          imported.push({ asset, stored: await uploadImage(blob) });
+          imported.push(storedToGalleryImage(await uploadImage(blob), asset));
         }
         if (!imported.length) {
           showToast("素材读取失败", "error");
           return;
         }
 
-        const newNodes: CanvasNodeData[] = [];
-        let targetUpdate: { stored: UploadedImage; asset: ImageAsset } | null = null;
-        imported.forEach((item, index) => {
-          if (targetNode && !targetHasImage && index === 0) {
-            targetUpdate = item;
-            return;
-          }
-          const adjustedIndex = targetUpdate ? index - 1 : index;
-          const size = fitNodeSize(item.stored.width, item.stored.height, 320, 320);
-          newNodes.push(createImageNode(
-            {
-              x: base.x + (adjustedIndex % cols) * gapX,
-              y: base.y + Math.floor(adjustedIndex / cols) * gapY,
-            },
-            {
-              title: item.asset.name,
-              width: size.width,
-              height: size.height,
-              metadata: storedToMetadata(item.stored, {
-                prompt: item.asset.prompt,
-                assetFolderId: folder.id,
-                assetFolderName: folder.name,
-              }),
-            },
-          ));
-        });
-
         pushHistory();
-        setNodes((prev) => {
-          const withTarget = targetUpdate && targetNode
-            ? prev.map((node) => {
-              if (node.id !== targetNode.id) return node;
-              const size = fitNodeSize(targetUpdate!.stored.width, targetUpdate!.stored.height, 360, 360);
-              return {
-                ...node,
-                title: targetUpdate!.asset.name,
-                width: size.width,
-                height: size.height,
-                metadata: storedToMetadata(targetUpdate!.stored, {
-                  prompt: targetUpdate!.asset.prompt,
-                  assetFolderId: folder.id,
-                  assetFolderName: folder.name,
-                }),
-              };
-            })
-            : prev;
-          return [...withTarget, ...newNodes];
-        });
-        setSelectedIds([...(targetUpdate && targetNode ? [targetNode.id] : []), ...newNodes.map((node) => node.id)]);
+        patchNode(targetId, (node) => ({
+          ...node,
+          title: folder.name,
+          width: Math.max(node.width, 560),
+          height: Math.max(node.height, 380),
+          metadata: {
+            ...node.metadata,
+            status: "success",
+            content: undefined,
+            storageKey: undefined,
+            mimeType: undefined,
+            naturalWidth: undefined,
+            naturalHeight: undefined,
+            bytes: undefined,
+            prompt: undefined,
+            galleryImages: imported,
+            assetFolderId: folder.id,
+            assetFolderName: folder.name,
+          },
+        }));
+        setSelectedIds([targetId]);
         setSelectedConnectionIds([]);
         showToast(`已从文件夹 ${folder.name} 导入 ${imported.length} 张图片`, "success");
       } catch {
         showToast("从素材库导入文件夹失败", "error");
       }
     },
-    [assetPicker.nodeId, createImageNode, nodes, pushHistory, showToast, viewportCenterWorld],
+    [assetPicker.nodeId, patchNode, pushHistory, showToast],
   );
 
   const fillTextNode = useCallback(
@@ -801,6 +880,26 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   const handleSaveToAssets = useCallback(
     async (node: CanvasNodeData) => {
       try {
+        if (node.metadata?.galleryImages?.length) {
+          let savedCount = 0;
+          for (const image of node.metadata.galleryImages) {
+            const key = image.storageKey;
+            let blob: Blob | null = key ? await getImageBlob(key) : null;
+            if (!blob && image.content) blob = await (await fetch(image.content)).blob();
+            if (!blob) continue;
+            await addImageAsset({
+              blob,
+              sourceKind: "manual",
+              sourceLabel: "无限画布",
+              name: image.name,
+              prompt: image.prompt || node.metadata?.prompt,
+              folderId: node.metadata?.assetFolderId,
+            });
+            savedCount++;
+          }
+          showToast(savedCount ? `已存入 ${savedCount} 张素材` : "无法读取图片", savedCount ? "success" : "error");
+          return;
+        }
         const key = node.metadata?.storageKey;
         let blob: Blob | null = key ? await getImageBlob(key) : null;
         if (!blob) {
@@ -1221,10 +1320,25 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       if (current?.kind === "connect") {
         setConnecting((conn) => {
           if (conn?.targetId) {
-            const from = current.handle.handleType === "source" ? current.handle.nodeId : conn.targetId;
-            const to = current.handle.handleType === "source" ? conn.targetId : current.handle.nodeId;
-            if (from !== to) {
-              setConnections((prev) => (prev.some((item) => item.fromNodeId === from && item.toNodeId === to) ? prev : [...prev, { id: nanoid(), fromNodeId: from, toNodeId: to }]));
+            const sourceIds = current.handle.handleType === "source" && selectedIds.includes(current.handle.nodeId)
+              ? selectedIds
+              : [current.handle.handleType === "source" ? current.handle.nodeId : conn.targetId];
+            const targetIds = current.handle.handleType === "target" && selectedIds.includes(current.handle.nodeId)
+              ? selectedIds
+              : [current.handle.handleType === "source" ? conn.targetId : current.handle.nodeId];
+            const nextConnections = sourceIds.flatMap((from) => targetIds
+              .filter((to) => from !== to)
+              .map((to) => ({ from, to })));
+            if (nextConnections.length) {
+              setConnections((prev) => {
+                const next = [...prev];
+                for (const connection of nextConnections) {
+                  if (!next.some((item) => item.fromNodeId === connection.from && item.toNodeId === connection.to)) {
+                    next.push({ id: nanoid(), fromNodeId: connection.from, toNodeId: connection.to });
+                  }
+                }
+                return next;
+              });
             }
           }
           return null;
@@ -1252,7 +1366,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleUp);
     };
-  }, [nodes, viewport.k, worldFromClient]);
+  }, [nodes, selectedIds, viewport.k, worldFromClient]);
 
   // ---- keyboard ----
   useEffect(() => {
@@ -1580,6 +1694,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
               key={node.id}
               data={node}
               imageUrl={nodeImageUrl(node)}
+              galleryImageUrls={nodeGalleryImageUrls(node)}
               isSelected={selectedIds.includes(node.id)}
               isRelated={relatedIds.has(node.id)}
               isConnectionTarget={connecting?.targetId === node.id}
@@ -1768,7 +1883,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
 
       <AgentAssetPickerDialog
         open={assetPicker.open}
-        maxSelected={1}
+        maxSelected={200}
         allowFolderSelection
         onOpenChange={(open) => setAssetPicker((prev) => ({ ...prev, open }))}
         onConfirm={(assets) => void handleAssetPickerConfirm(assets)}

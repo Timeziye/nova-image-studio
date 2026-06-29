@@ -19,8 +19,8 @@ export type CanvasResourceReference = {
 export function buildCanvasResourceReferences(nodes: CanvasNodeData[], connections: CanvasConnection[], contextNodeId?: string | null, imageUrls?: Record<string, string>) {
   const contextNodes = contextNodeId ? getMentionResourceNodes(contextNodeId, nodes, connections) : [];
   const globalReferences = labelResourceNodes(nodes.filter(isResourceNode), false, imageUrls);
-  const activeByNodeId = new Map(labelResourceNodes(contextNodes, true, imageUrls).map((reference) => [reference.nodeId, reference]));
-  return globalReferences.map((reference) => activeByNodeId.get(reference.nodeId) || reference);
+  const activeByToken = new Map(labelResourceNodes(contextNodes, true, imageUrls).map((reference) => [reference.token, reference]));
+  return globalReferences.map((reference) => activeByToken.get(reference.token) || reference);
 }
 
 export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[], imageUrls?: Record<string, string>) {
@@ -62,9 +62,38 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?
   return nodes.flatMap((node): CanvasResourceReference[] => {
     const kind = resourceKind(node);
     if (!kind) return [];
+    const galleryImages = node.metadata?.galleryImages || [];
     const index = counts[kind]++;
     const fallbackLabel = labelForKind(kind, index);
     const label = node.title?.trim() || fallbackLabel;
+    if (kind === "image" && galleryImages.length) {
+      return [
+        {
+          id: node.id,
+          nodeId: node.id,
+          token: `node:${node.id}`,
+          kind: "image-group",
+          label,
+          title: `${galleryImages.length} 张图片`,
+          active,
+        },
+        ...galleryImages.map((image, imageIndex): CanvasResourceReference => {
+          if (imageIndex > 0) counts.image++;
+          const resolvedImage = image.storageKey && imageUrls ? imageUrls[image.storageKey] : undefined;
+          const imageLabel = `${label} / ${imageReferenceLabel(imageIndex)}`;
+          return {
+            id: `${node.id}:${image.id}`,
+            nodeId: node.id,
+            token: `node-image:${node.id}:${image.id}`,
+            kind: "image",
+            label: imageLabel,
+            title: image.name || imageReferenceLabel(imageIndex),
+            previewUrl: resolvedImage || image.content,
+            active,
+          };
+        }),
+      ];
+    }
     // 优先用已解析的 blob URL（刷新后 metadata.content 是失效的 blob URL，需要通过 storageKey 解析）
     const resolvedImage = node.metadata?.storageKey && imageUrls ? imageUrls[node.metadata.storageKey] : undefined;
     return [
@@ -111,6 +140,7 @@ function isResourceNode(node: CanvasNodeData) {
 }
 
 function resourceKind(node: CanvasNodeData): CanvasNodeResourceKind | null {
+  if (node.type === CanvasNodeType.Image && node.metadata?.galleryImages?.length) return "image";
   if (node.type === CanvasNodeType.Image && (node.metadata?.content || node.metadata?.storageKey)) return "image";
   if (node.type === CanvasNodeType.Image && node.metadata?.canvasRole === "target") return "image";
   if (node.type === CanvasNodeType.Text && (node.metadata?.content || node.metadata?.prompt)) return "text";
