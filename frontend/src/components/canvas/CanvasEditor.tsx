@@ -56,6 +56,9 @@ const MAX_HISTORY = 50;
 const RESULT_GRID_X_OFFSET = 96;
 const RESULT_GRID_COLUMN_GAP = 420;
 const RESULT_GRID_ROW_GAP = 300;
+const PAIRWISE_GALLERY_ROWS_PER_COLUMN = 15;
+const PAIRWISE_GALLERY_GROUP_GAP_X = 240;
+const PAIRWISE_GENERATION_CONCURRENCY = 4;
 const CANVAS_MENTION_TOKEN_PATTERN = /@\[[^\]]+\]/g;
 
 function getResultGridColumns(count: number) {
@@ -74,13 +77,23 @@ function getResultNodePosition(sourceNode: CanvasNodeData, index: number, count:
   };
 }
 
-function getPairwiseResultNodePosition(configNode: CanvasNodeData, inputNode: CanvasNodeData | undefined, index: number, count: number): Position {
+function getPairwiseResultNodePosition(configNode: CanvasNodeData, inputNode: CanvasNodeData | undefined, index: number, count: number, sourceColumnOffset: number, indexInSource: number): Position {
   const resultWidth = 320;
   const resultHeight = 240;
   if (!inputNode) return getResultNodePosition(configNode, index, count);
 
   const isGalleryNode = Boolean(inputNode.metadata?.galleryImages?.length);
-  if (isGalleryNode) return getResultNodePosition(inputNode, index, count);
+  if (isGalleryNode) {
+    const configCenterX = configNode.position.x + configNode.width / 2;
+    const inputCenterX = inputNode.position.x + inputNode.width / 2;
+    const mirroredDistance = Math.max(configCenterX - inputCenterX, configNode.width / 2 + RESULT_GRID_X_OFFSET + resultWidth / 2);
+    const column = Math.floor(indexInSource / PAIRWISE_GALLERY_ROWS_PER_COLUMN);
+    const row = indexInSource % PAIRWISE_GALLERY_ROWS_PER_COLUMN;
+    return {
+      x: configCenterX + mirroredDistance - resultWidth / 2 + sourceColumnOffset + column * RESULT_GRID_COLUMN_GAP,
+      y: inputNode.position.y + row * RESULT_GRID_ROW_GAP,
+    };
+  }
 
   const configCenterX = configNode.position.x + configNode.width / 2;
   const inputCenterX = inputNode.position.x + inputNode.width / 2;
@@ -1032,9 +1045,28 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         }
 
         const pairwiseConfig: CanvasGenerationConfig = { ...genConfig, count: 1 };
+        const sourceNodeIds = Array.from(new Set(pairwiseContexts.map((item) => item.input.nodeId)));
+        const sourceTotals = new Map<string, number>();
+        for (const item of pairwiseContexts) sourceTotals.set(item.input.nodeId, (sourceTotals.get(item.input.nodeId) || 0) + 1);
+        const sourceColumnOffsets = new Map<string, number>();
+        let nextSourceColumnOffset = 0;
+        for (const sourceNodeId of sourceNodeIds) {
+          sourceColumnOffsets.set(sourceNodeId, nextSourceColumnOffset);
+          const inputNode = nodes.find((node) => node.id === sourceNodeId);
+          const isGalleryNode = Boolean(inputNode?.metadata?.galleryImages?.length);
+          const columns = isGalleryNode ? Math.ceil((sourceTotals.get(sourceNodeId) || 0) / PAIRWISE_GALLERY_ROWS_PER_COLUMN) : 1;
+          nextSourceColumnOffset += columns * RESULT_GRID_COLUMN_GAP + PAIRWISE_GALLERY_GROUP_GAP_X;
+        }
+        const sourceCounts = new Map<string, number>();
         const planned = pairwiseContexts.map((item, index) => {
           const inputNode = nodes.find((node) => node.id === item.input.nodeId);
-          const node = createImageNode(getPairwiseResultNodePosition(sourceNode, inputNode, index, pairwiseContexts.length));
+          const indexInSource = sourceCounts.get(item.input.nodeId) || 0;
+          sourceCounts.set(item.input.nodeId, indexInSource + 1);
+          const sourceColumnOffset = sourceColumnOffsets.get(item.input.nodeId) || 0;
+          const node = createImageNode(
+            getPairwiseResultNodePosition(sourceNode, inputNode, index, pairwiseContexts.length, sourceColumnOffset, indexInSource),
+            { metadata: { status: "queued" } },
+          );
           return { item, node };
         });
         const newConnections = planned.map(({ node }) => ({ id: nanoid(), fromNodeId: sourceNode.id, toNodeId: node.id }));
@@ -1045,10 +1077,17 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         setSelectedIds(planned.map(({ node }) => node.id));
         setSelectedConnectionIds([]);
 
-        for (const { item, node } of planned) {
-          const hydrated = await hydrateNodeGenerationContext(item.context);
-          void startNodeGeneration(node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
-        }
+        showToast(`已创建 ${planned.length} 个对应生成任务，最多同时提交 ${PAIRWISE_GENERATION_CONCURRENCY} 个`, "info");
+        const queue = [...planned];
+        const workers = Array.from({ length: Math.min(PAIRWISE_GENERATION_CONCURRENCY, queue.length) }, async () => {
+          while (queue.length) {
+            const next = queue.shift();
+            if (!next) return;
+            const hydrated = await hydrateNodeGenerationContext(next.item.context);
+            await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
+          }
+        });
+        void Promise.all(workers);
         return;
       }
 

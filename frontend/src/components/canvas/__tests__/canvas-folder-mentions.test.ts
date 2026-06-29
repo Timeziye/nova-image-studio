@@ -95,7 +95,6 @@ describe('canvas folder image mentions', () => {
     const references = buildNodeMentionReferences(nodes[1], nodes, nodeConnections);
     expect(references.map(reference => reference.token)).toEqual([
       'all-images',
-      'node:folder-node',
       'node-image:folder-node:asset-1',
       'node-image:folder-node:asset-2',
     ]);

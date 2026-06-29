@@ -24,7 +24,11 @@ export function buildCanvasResourceReferences(nodes: CanvasNodeData[], connectio
 }
 
 export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[], imageUrls?: Record<string, string>) {
-  return withAllImagesReference(labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true, imageUrls));
+  const resourceNodes = getMentionResourceNodes(node.id, nodes, connections);
+  const references = labelResourceNodes(resourceNodes, true, imageUrls);
+  const onlyGalleryNode = resourceNodes.length === 1 && Boolean(resourceNodes[0]?.metadata?.galleryImages?.length);
+  const nextReferences = onlyGalleryNode ? references.filter((reference) => reference.token !== `node:${resourceNodes[0].id}`) : references;
+  return withAllImagesReference(nextReferences);
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
