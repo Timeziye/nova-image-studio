@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildNodeGenerationContext } from '../components/canvas-node-generation';
+import { buildNodeGenerationContext, buildPairwiseGenerationContexts } from '../components/canvas-node-generation';
 import { buildNodeMentionReferences } from '../utils/canvas-resource-references';
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from '../types';
 
@@ -129,5 +129,24 @@ describe('canvas folder image mentions', () => {
       'node-image:folder-b:asset-1',
       'node-image:folder-b:asset-2',
     ]);
+  });
+  it('corresponding generation splits a folder node into ordered single-image contexts', () => {
+    const nodes = [
+      galleryNode('folder-node', 'Folder A'),
+      configNode('config-1', 'Use @[all-images] as reference'),
+    ];
+    const nodeConnections: CanvasConnection[] = [
+      { id: 'c1', fromNodeId: 'folder-node', toNodeId: 'config-1' },
+    ];
+
+    const contexts = buildPairwiseGenerationContexts('config-1', nodes, nodeConnections, nodes[1].metadata?.composerContent || '');
+
+    expect(contexts).toHaveLength(2);
+    expect(contexts.map(item => item.input.resourceToken)).toEqual([
+      'node-image:folder-node:asset-1',
+      'node-image:folder-node:asset-2',
+    ]);
+    expect(contexts.map(item => item.context.imageCount)).toEqual([1, 1]);
+    expect(contexts.map(item => item.context.referenceImages[0]?.id)).toEqual(['asset-1', 'asset-2']);
   });
 });

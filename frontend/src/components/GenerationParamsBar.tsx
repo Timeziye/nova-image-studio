@@ -41,13 +41,14 @@ interface GenerationParamsBarProps {
   onChange: (patch: Partial<GenerationParamsValue>) => void;
   size?: ButtonSize;
   className?: string;
+  disableParallelCount?: boolean;
 }
 
 /**
  * 共享的「模型 + 生成参数」控件条（自宿主 TextToImageForm 抽取）。受控：对外只发最终 patch，
  * 模型/分辨率联动级联在内部完成。文生图与无限画布编排节点共用，保证展示一致并支持自定义分辨率。
  */
-export function GenerationParamsBar({ value, onChange, size = 'xs', className }: GenerationParamsBarProps) {
+export function GenerationParamsBar({ value, onChange, size = 'xs', className, disableParallelCount = false }: GenerationParamsBarProps) {
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [sizePopoverOpen, setSizePopoverOpen] = useState(false);
   const [aspectPopoverOpen, setAspectPopoverOpen] = useState(false);
@@ -191,8 +192,8 @@ export function GenerationParamsBar({ value, onChange, size = 'xs', className }:
         </PopoverContent>
       </Popover>
 
-      <Popover open={parallelPopoverOpen} onOpenChange={setParallelPopoverOpen}>
-        <PopoverTrigger className={cn(buttonVariants({ variant: 'outline', size }), 'gap-1')} title="并行数量">
+      <Popover open={parallelPopoverOpen && !disableParallelCount} onOpenChange={(open) => setParallelPopoverOpen(disableParallelCount ? false : open)}>
+        <PopoverTrigger className={cn(buttonVariants({ variant: 'outline', size }), 'gap-1')} title={disableParallelCount ? '对应生成时由上游图片数量决定' : '并行数量'} disabled={disableParallelCount}>
           <Copy className="h-3 w-3" />
           <span className="text-[11px]">x{value.parallelCount}</span>
         </PopoverTrigger>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Lock, LockOpen, Sparkles, Wand2 } from "lucide-react";
+import { Lock, LockOpen, Rows3, Sparkles, Wand2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { GenerationParamsBar, type GenerationParamsValue } from "@/components/GenerationParamsBar";
@@ -11,18 +11,21 @@ import { Spinner } from "./canvas-ui";
 import type { CanvasGenerationConfig } from "../types";
 import type { CanvasResourceReference } from "../utils/canvas-resource-references";
 
-/** 渲染在「编排节点」内部：提示词（@ 引用）+ 模型参数（复用宿主 GenerationParamsBar，含自定义分辨率）+ 生成按钮。 */
 export function CanvasConfigNodePanel({
   prompt,
   references,
   config,
   lockResultNodes,
+  pairwiseGeneration,
+  pairwiseAvailable,
+  pairwiseCount,
   referenceLimit,
   busy,
   optimizing,
   onPromptChange,
   onConfigChange,
   onToggleLock,
+  onTogglePairwiseGeneration,
   onSelect,
   onOptimizePrompt,
   onGenerate,
@@ -31,16 +34,22 @@ export function CanvasConfigNodePanel({
   references: CanvasResourceReference[];
   config: CanvasGenerationConfig;
   lockResultNodes: boolean;
+  pairwiseGeneration: boolean;
+  pairwiseAvailable: boolean;
+  pairwiseCount: number;
   referenceLimit: { imageCount: number; max: number; exceeded: boolean };
   busy: boolean;
   optimizing: boolean;
   onPromptChange: (value: string) => void;
   onConfigChange: (patch: Partial<CanvasGenerationConfig>) => void;
   onToggleLock: () => void;
+  onTogglePairwiseGeneration: () => void;
   onSelect: () => void;
   onOptimizePrompt: () => void;
   onGenerate: () => void;
 }) {
+  const pairwiseActive = pairwiseGeneration && pairwiseAvailable;
+  const referenceLimitExceeded = referenceLimit.exceeded && !pairwiseActive;
   const value: GenerationParamsValue = {
     model: normalizeModel(config.model),
     outputSize: config.outputSize,
@@ -78,6 +87,7 @@ export function CanvasConfigNodePanel({
           value={value}
           onChange={handleParamsChange}
           size="xs"
+          disableParallelCount={pairwiseActive}
         />
         <div className="flex items-center gap-1.5">
           <Button
@@ -86,7 +96,7 @@ export function CanvasConfigNodePanel({
             onClick={onOptimizePrompt}
             disabled={busy || optimizing || !prompt.trim()}
             className="shrink-0 gap-1"
-            title="优化提示词（结合连接的上游图片/文字）"
+            title="优化提示词（结合连接的上游图片和文字）"
           >
             {optimizing ? <Spinner className="size-3.5" /> : <Wand2 className="size-3.5" />}
           </Button>
@@ -98,19 +108,30 @@ export function CanvasConfigNodePanel({
             title={lockResultNodes ? "已锁定：结果直接覆盖连接的图片节点" : "未锁定：每次生成新建结果图片节点"}
           >
             {lockResultNodes ? <Lock className="size-3" /> : <LockOpen className="size-3" />}
-            <span className="text-[11px]">{lockResultNodes ? "将覆盖已有结果节点" : "将新建结果节点"}</span>
+            <span className="text-[11px]">{lockResultNodes ? "覆盖结果" : "新建结果"}</span>
           </Button>
-          <Button size="sm" onClick={onGenerate} disabled={busy || referenceLimit.exceeded} className="flex-1">
+          <Button
+            variant={pairwiseActive ? "secondary" : "outline"}
+            size="xs"
+            onClick={onTogglePairwiseGeneration}
+            disabled={busy || !pairwiseAvailable}
+            className={cn("flex-1 gap-1", pairwiseActive && "border-primary text-primary")}
+            title={pairwiseAvailable ? "按上游图片顺序逐张套用同一套提示词" : "连接多张上游图片后可用"}
+          >
+            <Rows3 className="size-3" />
+            <span className="text-[11px]">对应生成</span>
+          </Button>
+          <Button size="sm" onClick={onGenerate} disabled={busy || referenceLimitExceeded} className="flex-1">
             {busy ? <Spinner className="size-4" /> : <Sparkles className="size-4" />}
             生成
           </Button>
         </div>
         <div className="flex items-center justify-between gap-2 text-[11px] leading-tight">
-          <span className={cn("min-w-0 truncate", referenceLimit.exceeded ? "text-destructive" : "text-muted-foreground")}>
+          <span className={cn("min-w-0 truncate", referenceLimitExceeded ? "text-destructive" : "text-muted-foreground")}>
             当前模型允许参考图数量：{referenceLimit.max}
           </span>
-          <span className={cn("shrink-0", referenceLimit.exceeded ? "text-destructive" : "text-muted-foreground")}>
-            {referenceLimit.exceeded ? "参考图超过模型限制" : `已连接 ${referenceLimit.imageCount} 张`}
+          <span className={cn("shrink-0", referenceLimitExceeded ? "text-destructive" : "text-muted-foreground")}>
+            {referenceLimitExceeded ? "参考图超过模型限制" : pairwiseActive ? `对应 ${pairwiseCount} 张` : `已连接 ${referenceLimit.imageCount} 张`}
           </span>
         </div>
       </div>

@@ -26,7 +26,7 @@ import { getNodeSpec } from "./constants";
 import { flushCanvasStoreSave, useCanvasStore } from "./stores/use-canvas-store";
 import { useCanvasConfigStore } from "./stores/use-canvas-config-store";
 import { CanvasApiKeyMissingError, submitNodeGeneration, pollNodeTask, checkExistingTask, type CanvasGeneratedImage } from "./canvas-generation-service";
-import { buildNodeGenerationContext, buildNodeGenerationInputs, hydrateNodeGenerationContext } from "./components/canvas-node-generation";
+import { buildNodeGenerationContext, buildNodeGenerationInputs, buildPairwiseGenerationContexts, hydrateNodeGenerationContext } from "./components/canvas-node-generation";
 import { buildNodeMentionReferences } from "./utils/canvas-resource-references";
 import { fitNodeSize } from "./utils/canvas-node-size";
 import { getImageBlob, imageToDataUrl, resolveImageUrl, uploadImage, type UploadedImage } from "./lib/image-storage";
@@ -71,6 +71,25 @@ function getResultNodePosition(sourceNode: CanvasNodeData, index: number, count:
   return {
     x: sourceNode.position.x + sourceNode.width + RESULT_GRID_X_OFFSET + column * RESULT_GRID_COLUMN_GAP,
     y: sourceNode.position.y + yOffset - centeredYOffset + row * RESULT_GRID_ROW_GAP,
+  };
+}
+
+function getPairwiseResultNodePosition(configNode: CanvasNodeData, inputNode: CanvasNodeData | undefined, index: number, count: number): Position {
+  const resultWidth = 320;
+  const resultHeight = 240;
+  if (!inputNode) return getResultNodePosition(configNode, index, count);
+
+  const isGalleryNode = Boolean(inputNode.metadata?.galleryImages?.length);
+  if (isGalleryNode) return getResultNodePosition(inputNode, index, count);
+
+  const configCenterX = configNode.position.x + configNode.width / 2;
+  const inputCenterX = inputNode.position.x + inputNode.width / 2;
+  const inputCenterY = inputNode.position.y + inputNode.height / 2;
+  const mirroredDistance = Math.max(configCenterX - inputCenterX, configNode.width / 2 + RESULT_GRID_X_OFFSET + resultWidth / 2);
+
+  return {
+    x: configCenterX + mirroredDistance - resultWidth / 2,
+    y: inputCenterY - resultHeight / 2,
   };
 }
 
@@ -608,10 +627,11 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
             x: targetNode.position.x + targetNode.width + 72,
             y: targetNode.position.y,
           } : viewportCenterWorld();
-          const cols = imported.length > 6 ? 3 : 2;
+          const [targetImport, ...remainingImports] = imported;
+          const cols = remainingImports.length > 6 ? 3 : 2;
           const gapX = 360;
           const gapY = 300;
-          const newNodes = imported.map((item, index): CanvasNodeData => {
+          const newNodes = remainingImports.map((item, index): CanvasNodeData => {
             const size = fitNodeSize(item.stored.width, item.stored.height, 320, 320);
             return createImageNode(
               {
@@ -626,9 +646,29 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
               },
             );
           });
+          const targetSize = fitNodeSize(targetImport.stored.width, targetImport.stored.height, 320, 320);
           pushHistory();
-          setNodes((prev) => [...prev, ...newNodes]);
-          setSelectedIds(newNodes.map((node) => node.id));
+          setNodes((prev) => [
+            ...prev.map((node) => (
+              node.id === targetId
+                ? {
+                    ...node,
+                    title: targetImport.asset.name,
+                    width: targetSize.width,
+                    height: targetSize.height,
+                    metadata: {
+                      ...node.metadata,
+                      ...storedToMetadata(targetImport.stored, { prompt: targetImport.asset.prompt }),
+                      galleryImages: undefined,
+                      assetFolderId: undefined,
+                      assetFolderName: undefined,
+                    },
+                  }
+                : node
+            )),
+            ...newNodes,
+          ]);
+          setSelectedIds([targetId, ...newNodes.map((node) => node.id)]);
           setSelectedConnectionIds([]);
           showToast(`已导入 ${imported.length} 张图片`, "success");
           return;
@@ -913,6 +953,14 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
     [connections, defaultConfig, nodes],
   );
 
+  const getConfigPairwiseInfo = useCallback(
+    (configNode: CanvasNodeData) => {
+      const count = buildNodeGenerationInputs(configNode.id, nodes, connections).filter((input) => input.type === "image" && input.image).length;
+      return { count, available: count > 1 };
+    },
+    [connections, nodes],
+  );
+
   // 对单个结果图片节点启动独立生成任务（提交 + 轮询）。
   const startNodeGeneration = useCallback(
     async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string) => {
@@ -975,6 +1023,34 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       const context = buildNodeGenerationContext(sourceNode.id, nodes, connections, promptText);
       const model = normalizeModel(genConfig.model);
       const maxReferenceImages = MODEL_IMAGE_LIMITS[model]?.max || 1;
+
+      const pairwiseContexts = sourceNode.metadata?.pairwiseGeneration ? buildPairwiseGenerationContexts(sourceNode.id, nodes, connections, promptText) : [];
+      if (pairwiseContexts.length > 1) {
+        if (pairwiseContexts.some((item) => item.context.imageCount > maxReferenceImages)) {
+          showToast("参考图超过模型限制", "error");
+          return;
+        }
+
+        const pairwiseConfig: CanvasGenerationConfig = { ...genConfig, count: 1 };
+        const planned = pairwiseContexts.map((item, index) => {
+          const inputNode = nodes.find((node) => node.id === item.input.nodeId);
+          const node = createImageNode(getPairwiseResultNodePosition(sourceNode, inputNode, index, pairwiseContexts.length));
+          return { item, node };
+        });
+        const newConnections = planned.map(({ node }) => ({ id: nanoid(), fromNodeId: sourceNode.id, toNodeId: node.id }));
+
+        pushHistory();
+        setNodes((prev) => [...prev, ...planned.map(({ node }) => node)]);
+        setConnections((prev) => [...prev, ...newConnections]);
+        setSelectedIds(planned.map(({ node }) => node.id));
+        setSelectedConnectionIds([]);
+
+        for (const { item, node } of planned) {
+          const hydrated = await hydrateNodeGenerationContext(item.context);
+          void startNodeGeneration(node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
+        }
+        return;
+      }
 
       if (context.imageCount > maxReferenceImages) {
         showToast("参考图超过模型限制", "error");
@@ -1719,23 +1795,30 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
                   setFullscreenImageUrl({ src: url, title: target.title, actionPayload: payload });
                 }
               }}
-              renderPanel={(configNode, onSelect) => (
-                <CanvasConfigNodePanel
-                  prompt={configNode.metadata?.composerContent || ""}
-                  references={buildNodeMentionReferences(configNode, nodes, connections, imageUrls)}
-                  config={configNode.metadata?.genConfig ?? defaultConfig}
-                  lockResultNodes={Boolean(configNode.metadata?.lockResultNodes)}
-                  referenceLimit={referenceLimit ?? getConfigReferenceLimit(configNode)}
-                  busy={busyNodeIds.includes(configNode.id)}
-                  optimizing={optimizing && optimizeNodeId === configNode.id}
-                  onPromptChange={(value) => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, composerContent: value } }))}
-                  onConfigChange={(patch) => handleConfigChange(configNode.id, patch)}
-                  onToggleLock={() => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, lockResultNodes: !n.metadata?.lockResultNodes } }))}
-                  onSelect={onSelect}
-                  onOptimizePrompt={() => void handleOptimizePrompt(configNode)}
-                  onGenerate={() => void runGeneration(configNode)}
-                />
-              )}
+              renderPanel={(configNode, onSelect) => {
+                const pairwiseInfo = getConfigPairwiseInfo(configNode);
+                return (
+                  <CanvasConfigNodePanel
+                    prompt={configNode.metadata?.composerContent || ""}
+                    references={buildNodeMentionReferences(configNode, nodes, connections, imageUrls)}
+                    config={configNode.metadata?.genConfig ?? defaultConfig}
+                    lockResultNodes={Boolean(configNode.metadata?.lockResultNodes)}
+                    pairwiseGeneration={Boolean(configNode.metadata?.pairwiseGeneration)}
+                    pairwiseAvailable={pairwiseInfo.available}
+                    pairwiseCount={pairwiseInfo.count}
+                    referenceLimit={referenceLimit ?? getConfigReferenceLimit(configNode)}
+                    busy={busyNodeIds.includes(configNode.id)}
+                    optimizing={optimizing && optimizeNodeId === configNode.id}
+                    onPromptChange={(value) => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, composerContent: value } }))}
+                    onConfigChange={(patch) => handleConfigChange(configNode.id, patch)}
+                    onToggleLock={() => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, lockResultNodes: !n.metadata?.lockResultNodes } }))}
+                    onTogglePairwiseGeneration={() => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, pairwiseGeneration: !n.metadata?.pairwiseGeneration } }))}
+                    onSelect={onSelect}
+                    onOptimizePrompt={() => void handleOptimizePrompt(configNode)}
+                    onGenerate={() => void runGeneration(configNode)}
+                  />
+                );
+              }}
             />
           );
         })}

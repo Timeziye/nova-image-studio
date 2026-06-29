@@ -19,6 +19,12 @@ export type NodeGenerationInput = {
   image?: ReferenceImage;
 };
 
+export type PairwiseGenerationContext = {
+  input: NodeGenerationInput;
+  index: number;
+  context: NodeGenerationContext;
+};
+
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string): NodeGenerationContext {
   const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
   const sourceNode = nodes.find((node) => node.id === nodeId);
@@ -38,6 +44,19 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     textCount: inputs.filter((input) => input.type === "text").length,
     imageCount: referenceImages.length,
   };
+}
+
+export function buildPairwiseGenerationContexts(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string): PairwiseGenerationContext[] {
+  const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
+  const imageInputs = inputs.filter((input) => input.type === "image" && input.image);
+  if (imageInputs.length < 2) return [];
+
+  const textInputs = inputs.filter((input) => input.type === "text");
+  return imageInputs.map((input, index) => ({
+    input,
+    index,
+    context: buildComposerGenerationContext([...textInputs, input], prompt),
+  }));
 }
 
 function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: string): NodeGenerationContext {

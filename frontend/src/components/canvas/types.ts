@@ -67,6 +67,8 @@ export type CanvasNodeMetadata = {
   genConfig?: CanvasGenerationConfig;
   /** 配置节点：锁定结果节点模式 */
   lockResultNodes?: boolean;
+  /** 配置节点：按上游图片顺序逐张对应生成。 */
+  pairwiseGeneration?: boolean;
   /** 单节点生成任务 ID（用于轮询 + 刷新恢复） */
   generationTaskId?: string;
   /** 单节点生成开始时间戳（用于计算用时） */
