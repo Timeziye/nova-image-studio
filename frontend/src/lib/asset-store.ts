@@ -513,6 +513,36 @@ export async function renameAssetFolder(folderId: string, name: string): Promise
   await putFolders([{ ...folder, name: normalizedName, updatedAt: now() }]);
 }
 
+export async function deleteAssetFolder(folderId: string): Promise<void> {
+  const folders = await listAssetFolders();
+  if (!folders.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
+  const db = await openAssetsDB();
+  if (!db) throw new Error('当前浏览器不支持素材库本地存储');
+  const assets = await getAllFromStore<AssetItem>(db, ASSETS_STORE);
+  const timestamp = now();
+  const updates = assets
+    .filter(isImageAsset)
+    .filter(asset => asset.folderId === folderId)
+    .map(asset => ({
+      ...asset,
+      folderId: undefined,
+      updatedAt: timestamp,
+    }));
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([FOLDERS_STORE, ASSETS_STORE], 'readwrite');
+    tx.objectStore(FOLDERS_STORE).delete(folderId);
+    const assetsStore = tx.objectStore(ASSETS_STORE);
+    for (const asset of updates) assetsStore.put(asset);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => {
+      const error = tx.error || new Error('文件夹删除失败');
+      db.close();
+      reject(error);
+    };
+  });
+}
+
 export async function reorderAssetFolders(folderIds: string[]): Promise<void> {
   const idOrder = new Map(folderIds.map((id, index) => [id, index]));
   const timestamp = now();

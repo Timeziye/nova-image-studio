@@ -42,6 +42,7 @@ import {
   addTextAsset,
   createAssetFolder,
   deleteAsset,
+  deleteAssetFolder,
   findOrCreateAssetFolder,
   formatAssetSize,
   getAssetBlob,
@@ -361,6 +362,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   const [editNote, setEditNote] = useState('');
   const [folderDialogMode, setFolderDialogMode] = useState<'create' | 'rename' | null>(null);
   const [editingFolder, setEditingFolder] = useState<AssetFolder | null>(null);
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<AssetFolder | null>(null);
   const [folderNameDraft, setFolderNameDraft] = useState('');
   const [textDialogOpen, setTextDialogOpen] = useState(false);
   const [textContent, setTextContent] = useState('');
@@ -407,7 +409,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     for (const folder of folders) counts.set(folder.id, assets.filter(asset => isImageAsset(asset) && asset.folderId === folder.id).length);
     return counts;
   }, [assets, folders]);
-  const canReorderFolders = sort === 'manual' && !debouncedQuery && !selectedTag && !selectedSource;
+  const canReorderFolders = !debouncedQuery && !selectedTag && !selectedSource;
   const canReorderImages = sort === 'manual' && selectedFolderId !== 'all' && !debouncedQuery && !selectedTag && !selectedSource;
 
   const filteredFolders = useMemo(() => {
@@ -650,6 +652,20 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     }
   }, [assets, bulkDeleting, reload, selectedAssetIds]);
 
+  const confirmDeleteFolder = useCallback(async () => {
+    if (!deleteFolderTarget) return;
+    try {
+      const removedFolderId = deleteFolderTarget.id;
+      await deleteAssetFolder(removedFolderId);
+      setDeleteFolderTarget(null);
+      if (selectedFolderId === removedFolderId) setSelectedFolderId('unfiled');
+      await reload();
+      dispatchImageActionToast('文件夹已删除，图片已移至未归档', 'success');
+    } catch (error) {
+      dispatchImageActionToast(error instanceof Error ? error.message : '删除文件夹失败', 'error');
+    }
+  }, [deleteFolderTarget, reload, selectedFolderId]);
+
   const toggleAssetSelection = useCallback((assetId: string) => {
     setSelectedAssetIds(prev => {
       const next = new Set(prev);
@@ -731,6 +747,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     setFolders(nextFolders);
     setDraggingFolderId(null);
     try {
+      setSort('manual');
       await reorderAssetFolders(nextFolders.map(folder => folder.id));
     } catch (error) {
       await reload();
@@ -1015,6 +1032,17 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                 >
                   <FolderPen className="h-3.5 w-3.5" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteFolderTarget(folder)}
+                  className={cn(
+                    'mr-1 rounded p-1 opacity-70 transition-opacity hover:bg-background/50 hover:text-destructive hover:opacity-100',
+                    selected && 'hover:bg-primary-foreground/15'
+                  )}
+                  title="删除文件夹"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
             );
           })}
@@ -1261,10 +1289,18 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
               <button
                 type="button"
                 onClick={() => openRenameFolderDialog(folder)}
-                className="absolute bottom-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                className="absolute bottom-2 right-8 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                 title="重命名文件夹"
               >
                 <FolderPen className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteFolderTarget(folder)}
+                className="absolute bottom-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                title="删除文件夹"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
               </button>
             </div>
           ))}
@@ -1626,6 +1662,17 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
           confirmText="删除"
           onConfirm={() => void confirmDeleteSelected()}
           onCancel={() => setDeleteSelectedOpen(false)}
+        />,
+        document.body,
+      )}
+
+      {deleteFolderTarget && createPortal(
+        <ConfirmDialog
+          title="删除文件夹"
+          message={`确定要删除文件夹「${deleteFolderTarget.name}」吗？文件夹内图片会移至未归档，不会删除图片。`}
+          confirmText="删除文件夹"
+          onConfirm={() => void confirmDeleteFolder()}
+          onCancel={() => setDeleteFolderTarget(null)}
         />,
         document.body,
       )}
