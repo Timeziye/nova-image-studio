@@ -9,7 +9,12 @@ import {
   Download,
   FileArchive,
   FileText,
+  Folder,
+  FolderInput,
+  FolderPen,
+  FolderPlus,
   Grid3X3,
+  GripVertical,
   HardDrive,
   ImageIcon,
   ImagePlus,
@@ -35,13 +40,20 @@ import { useImageLazyLoad } from '@/hooks/useImageLazyLoad';
 import {
   addImageAsset,
   addTextAsset,
+  createAssetFolder,
   deleteAsset,
   formatAssetSize,
   getAssetBlob,
   getAssetThumbnailBlob,
   getSourceKindLabel,
   listAssets,
+  listAssetFolders,
+  moveImageAssetsToFolder,
+  renameAssetFolder,
+  reorderAssetFolders,
+  reorderImageAssets,
   updateImageAsset,
+  type AssetFolder,
   type AssetItem,
   type AssetSourceKind,
   type ImageAsset,
@@ -62,7 +74,11 @@ interface AssetsWorkspaceProps {
 const SETTINGS_KEY = 'nova-assets-settings';
 const PAGE_SIZE = 48;
 const PROMPT_TAG = '提示词';
-const SORT_OPTIONS: Array<{ value: 'newest' | 'oldest' | 'used'; label: string }> = [
+type AssetSort = 'manual' | 'newest' | 'oldest' | 'used';
+type FolderFilterId = 'all' | 'unfiled' | string;
+
+const SORT_OPTIONS: Array<{ value: AssetSort; label: string }> = [
+  { value: 'manual', label: '自定义排序' },
   { value: 'newest', label: '最新添加' },
   { value: 'oldest', label: '最早添加' },
   { value: 'used', label: '最近使用' },
@@ -73,14 +89,15 @@ const VIEW_SIZE_OPTIONS: Array<{ value: AssetViewSize; label: string }> = [
   { value: 'large', label: '详细' },
 ];
 type AssetViewSize = 'compact' | 'normal' | 'large';
-type AssetSettings = { sort: 'newest' | 'oldest' | 'used'; viewSize: AssetViewSize };
+type AssetSettings = { sort: AssetSort; viewSize: AssetViewSize; folderId?: FolderFilterId };
 
 export function loadAssetSettings(): AssetSettings {
-  if (typeof window === 'undefined') return { sort: 'newest', viewSize: 'normal' };
+  if (typeof window === 'undefined') return { sort: 'newest', viewSize: 'normal', folderId: 'all' };
   const saved = loadJsonFromStorage<AssetSettings>(SETTINGS_KEY);
   return {
-    sort: saved.sort === 'oldest' || saved.sort === 'used' ? saved.sort : 'newest',
+    sort: saved.sort === 'manual' || saved.sort === 'oldest' || saved.sort === 'used' ? saved.sort : 'newest',
     viewSize: saved.viewSize === 'compact' || saved.viewSize === 'large' ? saved.viewSize : 'normal',
+    folderId: saved.folderId || 'all',
   };
 }
 
@@ -262,14 +279,16 @@ function AssetThumbnail({
 
 export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorkspaceProps) {
   const [assets, setAssets] = useState<AssetItem[]>([]);
+  const [folders, setFolders] = useState<AssetFolder[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, 180);
   const [selectedTag, setSelectedTag] = useState('');
   const [selectedSource, setSelectedSource] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [sort, setSort] = useState<'newest' | 'oldest' | 'used'>(() => loadAssetSettings().sort);
+  const [sort, setSort] = useState<AssetSort>(() => loadAssetSettings().sort);
   const [viewSize, setViewSize] = useState<AssetViewSize>(() => loadAssetSettings().viewSize);
+  const [selectedFolderId, setSelectedFolderId] = useState<FolderFilterId>(() => loadAssetSettings().folderId || 'all');
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [editingAsset, setEditingAsset] = useState<ImageAsset | null>(null);
@@ -281,13 +300,19 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [sourcePopoverOpen, setSourcePopoverOpen] = useState(false);
   const [sortPopoverOpen, setSortPopoverOpen] = useState(false);
+  const [archivePopoverOpen, setArchivePopoverOpen] = useState(false);
   const [metadataGenerating, setMetadataGenerating] = useState(false);
   const [metadataSuggestion, setMetadataSuggestion] = useState<AssetMetadataSuggestion | null>(null);
   const [editName, setEditName] = useState('');
   const [editTags, setEditTags] = useState('');
   const [editNote, setEditNote] = useState('');
+  const [folderDialogMode, setFolderDialogMode] = useState<'create' | 'rename' | null>(null);
+  const [editingFolder, setEditingFolder] = useState<AssetFolder | null>(null);
+  const [folderNameDraft, setFolderNameDraft] = useState('');
   const [textDialogOpen, setTextDialogOpen] = useState(false);
   const [textContent, setTextContent] = useState('');
+  const [draggingFolderId, setDraggingFolderId] = useState<string | null>(null);
+  const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
   const fullObjectUrlsRef = useRef<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const tagDragRef = useRef({ pointerId: -1, startX: 0, scrollLeft: 0, dragged: false });
@@ -299,8 +324,9 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
 
   const reload = useCallback(async () => {
     setLoading(true);
-    const nextAssets = await listAssets();
+    const [nextAssets, nextFolders] = await Promise.all([listAssets(), listAssetFolders()]);
     setAssets(nextAssets);
+    setFolders(nextFolders);
     setLoading(false);
   }, []);
 
@@ -310,11 +336,41 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   }, [active, reload]);
 
   useEffect(() => {
-    saveJsonToStorage(SETTINGS_KEY, { sort, viewSize });
-  }, [sort, viewSize]);
+    saveJsonToStorage(SETTINGS_KEY, { sort, viewSize, folderId: selectedFolderId });
+  }, [selectedFolderId, sort, viewSize]);
+
+  const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+  const selectedFolderName = selectedFolderId === 'all'
+    ? '全部素材'
+    : selectedFolderId === 'unfiled'
+      ? '未归档'
+      : folderById.get(selectedFolderId)?.name || '文件夹';
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    counts.set('all', assets.length);
+    counts.set('unfiled', assets.filter(asset => isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId)).length);
+    for (const folder of folders) counts.set(folder.id, assets.filter(asset => isImageAsset(asset) && asset.folderId === folder.id).length);
+    return counts;
+  }, [assets, folders]);
+  const canReorderImages = selectedFolderId !== 'all' && !debouncedQuery && !selectedTag && !selectedSource;
 
   const filteredAssets = useMemo(() => {
-    const filtered = assets.filter(asset => matchesAsset(asset, debouncedQuery, selectedTag, selectedSource));
+    const folderFiltered = assets.filter(asset => {
+      if (selectedFolderId === 'all') return true;
+      if (selectedFolderId === 'unfiled') return isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId);
+      return isImageAsset(asset) && asset.folderId === selectedFolderId;
+    });
+    const filtered = folderFiltered.filter(asset => matchesAsset(asset, debouncedQuery, selectedTag, selectedSource));
+    if (sort === 'manual') {
+      return filtered.sort((a, b) => {
+        if (isTextAsset(a) && !isTextAsset(b)) return 1;
+        if (!isTextAsset(a) && isTextAsset(b)) return -1;
+        if (isImageAsset(a) && isImageAsset(b)) {
+          return (a.order || a.createdAt || 0) - (b.order || b.createdAt || 0);
+        }
+        return b.createdAt - a.createdAt;
+      });
+    }
     if (sort === 'oldest') {
       return filtered.sort((a, b) => a.createdAt - b.createdAt);
     }
@@ -322,7 +378,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       return filtered.sort((a, b) => (b.lastUsedAt || b.updatedAt || b.createdAt) - (a.lastUsedAt || a.updatedAt || a.createdAt));
     }
     return filtered.sort((a, b) => b.createdAt - a.createdAt);
-  }, [assets, debouncedQuery, selectedSource, selectedTag, sort]);
+  }, [assets, debouncedQuery, selectedFolderId, selectedSource, selectedTag, sort]);
 
   const visibleAssets = useMemo(() => filteredAssets.slice(0, visibleCount), [filteredAssets, visibleCount]);
   useEffect(() => {
@@ -344,7 +400,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [debouncedQuery, selectedSource, selectedTag, sort]);
+  }, [debouncedQuery, selectedFolderId, selectedSource, selectedTag, sort]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const allTags = useMemo(() => uniqueTags(assets), [assets]);
@@ -362,6 +418,8 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     return total;
   }, [assets]);
   const selectedCount = selectedAssetIds.size;
+  const selectedImageAssets = useMemo(() => assets.filter(asset => selectedAssetIds.has(asset.id) && isImageAsset(asset)), [assets, selectedAssetIds]);
+  const selectedImageCount = selectedImageAssets.length;
   const allVisibleSelected = visibleAssets.length > 0 && visibleAssets.every(asset => selectedAssetIds.has(asset.id));
   const selectedSourceLabel = selectedSource ? getSourceKindLabel(selectedSource as AssetSourceKind) : '全部来源';
   const sortLabel = SORT_OPTIONS.find(option => option.value === sort)?.label || '最新添加';
@@ -409,6 +467,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
         await addImageAsset({
           blob: file,
           name: file.name,
+          folderId: selectedFolderId !== 'all' && selectedFolderId !== 'unfiled' ? selectedFolderId : undefined,
           sourceKind: 'manual',
           sourceLabel: '手动导入',
           sourceRef: file.name,
@@ -422,7 +481,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     } finally {
       setImporting(false);
     }
-  }, [reload]);
+  }, [reload, selectedFolderId]);
 
   const saveTextAsset = useCallback(async () => {
     try {
@@ -524,6 +583,91 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     });
   }, [visibleAssets]);
 
+  const openCreateFolderDialog = useCallback(() => {
+    setEditingFolder(null);
+    setFolderNameDraft('');
+    setFolderDialogMode('create');
+  }, []);
+
+  const openRenameFolderDialog = useCallback((folder: AssetFolder) => {
+    setEditingFolder(folder);
+    setFolderNameDraft(folder.name);
+    setFolderDialogMode('rename');
+  }, []);
+
+  const saveFolderDialog = useCallback(async () => {
+    try {
+      if (folderDialogMode === 'create') {
+        const folder = await createAssetFolder(folderNameDraft);
+        setSelectedFolderId(folder.id);
+        dispatchImageActionToast('文件夹已创建', 'success');
+      } else if (folderDialogMode === 'rename' && editingFolder) {
+        await renameAssetFolder(editingFolder.id, folderNameDraft);
+        dispatchImageActionToast('文件夹已重命名', 'success');
+      }
+      setFolderDialogMode(null);
+      setEditingFolder(null);
+      setFolderNameDraft('');
+      await reload();
+    } catch (error) {
+      dispatchImageActionToast(error instanceof Error ? error.message : '保存文件夹失败', 'error');
+    }
+  }, [editingFolder, folderDialogMode, folderNameDraft, reload]);
+
+  const archiveSelectedImages = useCallback(async (folderId?: string | null) => {
+    if (selectedImageAssets.length === 0) return;
+    try {
+      await moveImageAssetsToFolder(selectedImageAssets.map(asset => asset.id), folderId);
+      setArchivePopoverOpen(false);
+      setSelectedAssetIds(prev => {
+        const next = new Set(prev);
+        for (const asset of selectedImageAssets) next.delete(asset.id);
+        return next;
+      });
+      await reload();
+      dispatchImageActionToast(`已归档 ${selectedImageAssets.length} 张图片`, 'success');
+    } catch (error) {
+      dispatchImageActionToast(error instanceof Error ? error.message : '归档图片失败', 'error');
+    }
+  }, [reload, selectedImageAssets]);
+
+  const handleFolderDrop = useCallback(async (targetFolderId: string) => {
+    if (!draggingFolderId || draggingFolderId === targetFolderId) return;
+    const fromIndex = folders.findIndex(folder => folder.id === draggingFolderId);
+    const toIndex = folders.findIndex(folder => folder.id === targetFolderId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const nextFolders = [...folders];
+    const [moved] = nextFolders.splice(fromIndex, 1);
+    nextFolders.splice(toIndex, 0, moved);
+    setFolders(nextFolders);
+    setDraggingFolderId(null);
+    try {
+      await reorderAssetFolders(nextFolders.map(folder => folder.id));
+    } catch (error) {
+      await reload();
+      dispatchImageActionToast(error instanceof Error ? error.message : '文件夹排序失败', 'error');
+    }
+  }, [draggingFolderId, folders, reload]);
+
+  const handleAssetDrop = useCallback(async (targetAssetId: string) => {
+    if (!draggingAssetId || draggingAssetId === targetAssetId || !canReorderImages) return;
+    const imageAssets = visibleAssets.filter(isImageAsset);
+    const fromIndex = imageAssets.findIndex(asset => asset.id === draggingAssetId);
+    const toIndex = imageAssets.findIndex(asset => asset.id === targetAssetId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const nextImageAssets = [...imageAssets];
+    const [moved] = nextImageAssets.splice(fromIndex, 1);
+    nextImageAssets.splice(toIndex, 0, moved);
+    setDraggingAssetId(null);
+    try {
+      setSort('manual');
+      await reorderImageAssets(nextImageAssets.map(asset => asset.id), selectedFolderId === 'unfiled' ? undefined : selectedFolderId);
+      await reload();
+    } catch (error) {
+      dispatchImageActionToast(error instanceof Error ? error.message : '图片排序失败', 'error');
+    }
+  }, [canReorderImages, draggingAssetId, reload, selectedFolderId, visibleAssets]);
+
   const downloadSelectedAssets = useCallback(async () => {
     if (selectedAssetIds.size === 0 || packing) return;
     setPacking(true);
@@ -613,7 +757,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
         <div className="space-y-1">
           <h3 className="text-base font-medium text-foreground">我的素材</h3>
           <div className="flex flex-wrap items-center gap-3">
-            <p className="text-xs text-muted-foreground">共 {assets.length} 项 · 当前 {filteredAssets.length} 项</p>
+            <p className="text-xs text-muted-foreground">共 {assets.length} 项 · {selectedFolderName} {filteredAssets.length} 项</p>
             <StorageEstimate totalBytes={totalBytes} />
           </div>
         </div>
@@ -628,6 +772,41 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
             {bulkDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
             {selectedCount > 0 ? `删除 (${selectedCount})` : '删除'}
           </Button>
+          <Popover open={archivePopoverOpen} onOpenChange={setArchivePopoverOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={selectedImageCount === 0}
+                className="gap-1.5"
+              >
+                <FolderInput className="h-3.5 w-3.5" />
+                {selectedImageCount > 0 ? `归档到 (${selectedImageCount})` : '归档到'}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-2">
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => void archiveSelectedImages(undefined)}
+                  className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                >
+                  未归档
+                </button>
+                {folders.map(folder => (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    onClick={() => void archiveSelectedImages(folder.id)}
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                  >
+                    <span className="truncate">{folder.name}</span>
+                    <span className="text-xs text-muted-foreground">{folderCounts.get(folder.id) || 0}</span>
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
           <Button
             variant="default"
             size="sm"
@@ -653,6 +832,10 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
             {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             导入图片
           </Button>
+          <Button variant="outline" size="sm" onClick={openCreateFolderDialog} className="gap-1.5">
+            <FolderPlus className="h-3.5 w-3.5" />
+            新建文件夹
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setTextDialogOpen(true)} className="gap-1.5">
             <FileText className="h-3.5 w-3.5" />
             新建提示词
@@ -661,6 +844,75 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       </div>
 
       <div className="min-w-0 space-y-3 overflow-hidden rounded-xl border border-border bg-card p-3">
+        <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1">
+          {[
+            { id: 'all' as FolderFilterId, name: '全部', count: folderCounts.get('all') || 0 },
+            { id: 'unfiled' as FolderFilterId, name: '未归档', count: folderCounts.get('unfiled') || 0 },
+          ].map(folder => (
+            <button
+              key={folder.id}
+              type="button"
+              onClick={() => setSelectedFolderId(folder.id)}
+              className={cn(
+                'inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-colors',
+                selectedFolderId === folder.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+              )}
+            >
+              <Folder className="h-3.5 w-3.5" />
+              <span>{folder.name}</span>
+              <span className="opacity-70">{folder.count}</span>
+            </button>
+          ))}
+          {folders.map(folder => {
+            const selected = selectedFolderId === folder.id;
+            return (
+              <div
+                key={folder.id}
+                draggable
+                onDragStart={event => {
+                  setDraggingFolderId(folder.id);
+                  event.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={event => {
+                  if (draggingFolderId && draggingFolderId !== folder.id) event.preventDefault();
+                }}
+                onDrop={event => {
+                  event.preventDefault();
+                  void handleFolderDrop(folder.id);
+                }}
+                onDragEnd={() => setDraggingFolderId(null)}
+                className={cn(
+                  'group inline-flex min-h-8 shrink-0 items-center rounded-lg border transition-colors',
+                  selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted',
+                  draggingFolderId === folder.id && 'opacity-50'
+                )}
+              >
+                <button
+                  type="button"
+                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs"
+                  onClick={() => setSelectedFolderId(folder.id)}
+                  title={folder.name}
+                >
+                  <GripVertical className="h-3.5 w-3.5 opacity-55" />
+                  <Folder className="h-3.5 w-3.5" />
+                  <span className="max-w-28 truncate">{folder.name}</span>
+                  <span className="opacity-70">{folderCounts.get(folder.id) || 0}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openRenameFolderDialog(folder)}
+                  className={cn(
+                    'mr-1 rounded p-1 opacity-70 transition-opacity hover:bg-background/50 hover:opacity-100',
+                    selected && 'hover:bg-primary-foreground/15'
+                  )}
+                  title="重命名文件夹"
+                >
+                  <FolderPen className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -889,10 +1141,26 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
             return (
               <div
                 key={asset.id}
+                draggable={canReorderImages}
+                onDragStart={event => {
+                  if (!canReorderImages) return;
+                  setDraggingAssetId(asset.id);
+                  event.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={event => {
+                  if (draggingAssetId && draggingAssetId !== asset.id && canReorderImages) event.preventDefault();
+                }}
+                onDrop={event => {
+                  event.preventDefault();
+                  void handleAssetDrop(asset.id);
+                }}
+                onDragEnd={() => setDraggingAssetId(null)}
                 className={cn(
                   'relative overflow-hidden rounded-lg border bg-card transition-colors hover:border-muted-foreground/40',
                   viewSize === 'large' && 'sm:flex sm:min-h-44',
-                  selected ? 'border-primary ring-1 ring-primary/30' : 'border-border'
+                  selected ? 'border-primary ring-1 ring-primary/30' : 'border-border',
+                  canReorderImages && 'cursor-move',
+                  draggingAssetId === asset.id && 'opacity-50'
                 )}
               >
                 <label className="absolute left-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm">
@@ -904,6 +1172,11 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                     title="选择素材"
                   />
                 </label>
+                {canReorderImages && (
+                  <div className="absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm" title="拖动排序">
+                    <GripVertical className="h-3.5 w-3.5" />
+                  </div>
+                )}
                 <div className={cn(viewSize === 'large' && 'sm:w-40 sm:shrink-0 2xl:w-44')}>
                   <AssetThumbnail asset={asset} viewSize={viewSize} onPreview={() => void openPreview(asset.id)} />
                 </div>
@@ -1065,6 +1338,54 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                 取消
               </Button>
               <Button onClick={() => void saveEdit()} disabled={metadataGenerating}>
+                保存
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={folderDialogMode !== null}
+        onOpenChange={open => {
+          if (!open) {
+            setFolderDialogMode(null);
+            setEditingFolder(null);
+            setFolderNameDraft('');
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {folderDialogMode === 'rename' ? <FolderPen className="h-4 w-4" /> : <FolderPlus className="h-4 w-4" />}
+              {folderDialogMode === 'rename' ? '重命名文件夹' : '新建文件夹'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">名称</label>
+              <Input
+                value={folderNameDraft}
+                onChange={event => setFolderNameDraft(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && folderNameDraft.trim()) void saveFolderDialog();
+                }}
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-2 border-t pt-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setFolderDialogMode(null);
+                  setEditingFolder(null);
+                  setFolderNameDraft('');
+                }}
+              >
+                取消
+              </Button>
+              <Button onClick={() => void saveFolderDialog()} disabled={!folderNameDraft.trim()}>
                 保存
               </Button>
             </div>

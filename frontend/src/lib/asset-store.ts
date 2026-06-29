@@ -29,6 +29,8 @@ export interface ImageAsset {
   sourceLabel: string;
   sourceRef?: string;
   prompt?: string;
+  folderId?: string;
+  order?: number;
   createdAt: number;
   updatedAt: number;
   lastUsedAt?: number;
@@ -50,6 +52,14 @@ export interface TextAsset {
 
 export type AssetItem = ImageAsset | TextAsset;
 
+export interface AssetFolder {
+  id: string;
+  name: string;
+  order: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AssetBlobRecord {
   key: string;
   hash: string;
@@ -67,6 +77,7 @@ export interface AddImageAssetInput {
   name?: string;
   tags?: string[];
   note?: string;
+  folderId?: string | null;
   sourceKind: AssetSourceKind;
   sourceLabel?: string;
   sourceRef?: string;
@@ -77,6 +88,8 @@ export interface UpdateImageAssetInput {
   name?: string;
   tags?: string[];
   note?: string;
+  folderId?: string | null;
+  order?: number;
 }
 
 export interface AddTextAssetInput {
@@ -87,9 +100,10 @@ export interface AddTextAssetInput {
 }
 
 const DB_NAME = 'nova-assets-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const ASSETS_STORE = 'assets';
 const BLOBS_STORE = 'asset-blobs';
+const FOLDERS_STORE = 'asset-folders';
 const THUMB_MAX_SIDE = 512;
 
 function now(): number {
@@ -168,6 +182,11 @@ function sanitizeTags(tags?: string[]): string[] {
   return Array.from(unique);
 }
 
+function normalizeFolderId(folderId?: string | null): string | undefined {
+  const normalized = String(folderId || '').trim();
+  return normalized || undefined;
+}
+
 function loadImageFromObjectUrl(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -228,6 +247,10 @@ function openAssetsDB(): Promise<IDBDatabase | null> {
       if (!db.objectStoreNames.contains(BLOBS_STORE)) {
         db.createObjectStore(BLOBS_STORE, { keyPath: 'key' });
       }
+      if (!db.objectStoreNames.contains(FOLDERS_STORE)) {
+        const store = db.createObjectStore(FOLDERS_STORE, { keyPath: 'id' });
+        store.createIndex('order', 'order', { unique: false });
+      }
     };
   });
 }
@@ -266,6 +289,40 @@ async function putAssetAndBlob(asset: AssetItem, blobRecord: AssetBlobRecord | n
   });
 }
 
+async function putAssets(assets: AssetItem[]): Promise<void> {
+  if (assets.length === 0) return;
+  const db = await openAssetsDB();
+  if (!db) throw new Error('当前浏览器不支持素材库本地存储');
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ASSETS_STORE, 'readwrite');
+    const store = tx.objectStore(ASSETS_STORE);
+    for (const asset of assets) store.put(asset);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => {
+      const error = tx.error || new Error('素材库写入失败');
+      db.close();
+      reject(error);
+    };
+  });
+}
+
+async function putFolders(folders: AssetFolder[]): Promise<void> {
+  if (folders.length === 0) return;
+  const db = await openAssetsDB();
+  if (!db) throw new Error('当前浏览器不支持素材库本地存储');
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FOLDERS_STORE, 'readwrite');
+    const store = tx.objectStore(FOLDERS_STORE);
+    for (const folder of folders) store.put(folder);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => {
+      const error = tx.error || new Error('文件夹写入失败');
+      db.close();
+      reject(error);
+    };
+  });
+}
+
 export async function addImageAsset(input: AddImageAssetInput): Promise<ImageAsset> {
   const sourceBlob = input.blob;
   const mimeType = sourceBlob.type || 'image/png';
@@ -296,6 +353,7 @@ export async function addImageAsset(input: AddImageAssetInput): Promise<ImageAss
       updatedAt: createdAt,
       tags: sanitizeTags([...sameSourceAsset.tags, ...(input.tags || [])]),
       note: input.note || sameSourceAsset.note,
+      ...(input.folderId !== undefined ? { folderId: normalizeFolderId(input.folderId) } : {}),
     };
     await putAssetAndBlob(updated, null);
     return updated;
@@ -334,6 +392,8 @@ export async function addImageAsset(input: AddImageAssetInput): Promise<ImageAss
     sourceLabel: input.sourceLabel || getSourceKindLabel(input.sourceKind),
     sourceRef: input.sourceRef,
     prompt: input.prompt,
+    folderId: normalizeFolderId(input.folderId),
+    order: createdAt,
     createdAt,
     updatedAt: createdAt,
     lastUsedAt: createdAt,
@@ -405,6 +465,59 @@ export async function listAssets(kind?: AssetKind): Promise<AssetItem[]> {
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
+export async function listAssetFolders(): Promise<AssetFolder[]> {
+  const db = await openAssetsDB();
+  if (!db) return [];
+  const folders = await getAllFromStore<AssetFolder>(db, FOLDERS_STORE);
+  db.close();
+  return folders.sort((a, b) => (a.order || 0) - (b.order || 0) || a.createdAt - b.createdAt || a.name.localeCompare(b.name, 'zh-Hans-CN'));
+}
+
+export async function createAssetFolder(name: string): Promise<AssetFolder> {
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error('文件夹名称不能为空');
+  const folders = await listAssetFolders();
+  if (folders.some(folder => folder.name.trim().toLowerCase() === normalizedName.toLowerCase())) {
+    throw new Error('同名文件夹已存在');
+  }
+  const createdAt = now();
+  const folder: AssetFolder = {
+    id: makeId('asset-folder'),
+    name: normalizedName,
+    order: (folders[folders.length - 1]?.order || 0) + 1000,
+    createdAt,
+    updatedAt: createdAt,
+  };
+  await putFolders([folder]);
+  return folder;
+}
+
+export async function renameAssetFolder(folderId: string, name: string): Promise<void> {
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error('文件夹名称不能为空');
+  const folders = await listAssetFolders();
+  const folder = folders.find(item => item.id === folderId);
+  if (!folder) throw new Error('文件夹不存在');
+  if (folders.some(item => item.id !== folderId && item.name.trim().toLowerCase() === normalizedName.toLowerCase())) {
+    throw new Error('同名文件夹已存在');
+  }
+  await putFolders([{ ...folder, name: normalizedName, updatedAt: now() }]);
+}
+
+export async function reorderAssetFolders(folderIds: string[]): Promise<void> {
+  const idOrder = new Map(folderIds.map((id, index) => [id, index]));
+  const timestamp = now();
+  const folders = await listAssetFolders();
+  const updates = folders
+    .filter(folder => idOrder.has(folder.id))
+    .map(folder => ({
+      ...folder,
+      order: ((idOrder.get(folder.id) || 0) + 1) * 1000,
+      updatedAt: timestamp,
+    }));
+  await putFolders(updates);
+}
+
 export async function listImageAssets(): Promise<ImageAsset[]> {
   const assets = await listAssets('image');
   return assets.filter(isImageAsset);
@@ -457,9 +570,59 @@ export async function updateImageAsset(assetId: string, input: UpdateImageAssetI
     name: input.name?.trim() || current.name,
     tags: input.tags ? sanitizeTags(input.tags) : current.tags,
     note: typeof input.note === 'string' ? input.note : current.note,
+    ...(input.folderId !== undefined ? { folderId: normalizeFolderId(input.folderId) } : {}),
+    ...(typeof input.order === 'number' ? { order: input.order } : {}),
     updatedAt: now(),
   };
   await putAssetAndBlob(updated, null);
+}
+
+export async function moveImageAssetsToFolder(assetIds: string[], folderId?: string | null): Promise<void> {
+  const ids = Array.from(new Set(assetIds));
+  if (ids.length === 0) return;
+  const normalizedFolderId = normalizeFolderId(folderId);
+  if (normalizedFolderId) {
+    const folders = await listAssetFolders();
+    if (!folders.some(folder => folder.id === normalizedFolderId)) throw new Error('文件夹不存在');
+  }
+  const db = await openAssetsDB();
+  if (!db) throw new Error('当前浏览器不支持素材库本地存储');
+  const assets = await getAllFromStore<AssetItem>(db, ASSETS_STORE);
+  db.close();
+  const imageAssets = assets.filter(isImageAsset);
+  const maxOrder = imageAssets
+    .filter(asset => (asset.folderId || '') === (normalizedFolderId || '') && !ids.includes(asset.id))
+    .reduce((max, asset) => Math.max(max, asset.order || asset.createdAt || 0), 0);
+  const timestamp = now();
+  const updates = imageAssets
+    .filter(asset => ids.includes(asset.id))
+    .map((asset, index) => ({
+      ...asset,
+      folderId: normalizedFolderId,
+      order: maxOrder + (index + 1) * 1000,
+      updatedAt: timestamp,
+    }));
+  await putAssets(updates);
+}
+
+export async function reorderImageAssets(assetIds: string[], folderId?: string | null): Promise<void> {
+  const idOrder = new Map(assetIds.map((id, index) => [id, index]));
+  if (idOrder.size === 0) return;
+  const normalizedFolderId = normalizeFolderId(folderId);
+  const db = await openAssetsDB();
+  if (!db) throw new Error('当前浏览器不支持素材库本地存储');
+  const assets = await getAllFromStore<AssetItem>(db, ASSETS_STORE);
+  db.close();
+  const timestamp = now();
+  const updates = assets
+    .filter(isImageAsset)
+    .filter(asset => idOrder.has(asset.id) && (asset.folderId || '') === (normalizedFolderId || ''))
+    .map(asset => ({
+      ...asset,
+      order: ((idOrder.get(asset.id) || 0) + 1) * 1000,
+      updatedAt: timestamp,
+    }));
+  await putAssets(updates);
 }
 
 export async function touchImageAsset(assetId: string): Promise<void> {
