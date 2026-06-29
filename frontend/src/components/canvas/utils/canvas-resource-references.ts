@@ -114,7 +114,8 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?
 
 function withAllImagesReference(references: CanvasResourceReference[]) {
   const activeImages = references.filter((reference) => reference.active && reference.kind === "image");
-  if (activeImages.length <= 1) return references;
+  const ordered = orderMentionReferences(references);
+  if (activeImages.length <= 1) return ordered;
   return [
     {
       id: "all-images",
@@ -125,8 +126,17 @@ function withAllImagesReference(references: CanvasResourceReference[]) {
       title: `${activeImages.length} 张上游图片`,
       active: true,
     },
-    ...references,
+    ...ordered,
   ];
+}
+
+function orderMentionReferences(references: CanvasResourceReference[]) {
+  const rank = (reference: CanvasResourceReference) => {
+    if (reference.kind === "image-group") return 0;
+    if (reference.kind === "image") return 1;
+    return 2;
+  };
+  return [...references].sort((a, b) => rank(a) - rank(b));
 }
 
 function labelForKind(kind: CanvasResourceKind, index: number) {

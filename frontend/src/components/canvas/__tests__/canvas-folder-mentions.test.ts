@@ -106,4 +106,28 @@ describe('canvas folder image mentions', () => {
     expect(context.prompt).toContain('整组：角色文件夹');
     expect(context.prompt).toContain('单张：角色文件夹 / 图片2');
   });
+
+  it('@ 候选按所有图片、文件夹、单张图片排序', () => {
+    const nodes = [
+      galleryNode('folder-a', '文件夹A'),
+      galleryNode('folder-b', '文件夹B'),
+      configNode('config-1'),
+    ];
+    const nodeConnections: CanvasConnection[] = [
+      { id: 'c1', fromNodeId: 'folder-a', toNodeId: 'config-1' },
+      { id: 'c2', fromNodeId: 'folder-b', toNodeId: 'config-1' },
+    ];
+
+    const references = buildNodeMentionReferences(nodes[2], nodes, nodeConnections);
+
+    expect(references.map(reference => reference.token)).toEqual([
+      'all-images',
+      'node:folder-a',
+      'node:folder-b',
+      'node-image:folder-a:asset-1',
+      'node-image:folder-a:asset-2',
+      'node-image:folder-b:asset-1',
+      'node-image:folder-b:asset-2',
+    ]);
+  });
 });

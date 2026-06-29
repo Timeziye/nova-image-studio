@@ -604,27 +604,19 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         }
         if (options?.mergeIntoGallery === false) {
           const targetNode = nodes.find((node) => node.id === targetId);
-          const targetHasImage = Boolean(targetNode?.metadata?.content || targetNode?.metadata?.storageKey || targetNode?.metadata?.galleryImages?.length);
           const base = targetNode ? {
-            x: targetNode.position.x + (targetHasImage ? targetNode.width + 72 : 0),
+            x: targetNode.position.x + targetNode.width + 72,
             y: targetNode.position.y,
           } : viewportCenterWorld();
           const cols = imported.length > 6 ? 3 : 2;
           const gapX = 360;
           const gapY = 300;
-          const newNodes: CanvasNodeData[] = [];
-          let targetUpdate: (typeof imported)[number] | null = null;
-          imported.forEach((item, index) => {
-            if (targetNode && !targetHasImage && index === 0) {
-              targetUpdate = item;
-              return;
-            }
-            const adjustedIndex = targetUpdate ? index - 1 : index;
+          const newNodes = imported.map((item, index): CanvasNodeData => {
             const size = fitNodeSize(item.stored.width, item.stored.height, 320, 320);
-            newNodes.push(createImageNode(
+            return createImageNode(
               {
-                x: base.x + (adjustedIndex % cols) * gapX,
-                y: base.y + Math.floor(adjustedIndex / cols) * gapY,
+                x: base.x + (index % cols) * gapX,
+                y: base.y + Math.floor(index / cols) * gapY,
               },
               {
                 title: item.asset.name,
@@ -632,26 +624,11 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
                 height: size.height,
                 metadata: storedToMetadata(item.stored, { prompt: item.asset.prompt }),
               },
-            ));
+            );
           });
           pushHistory();
-          setNodes((prev) => {
-            const withTarget = targetUpdate && targetNode
-              ? prev.map((node) => {
-                if (node.id !== targetNode.id) return node;
-                const size = fitNodeSize(targetUpdate!.stored.width, targetUpdate!.stored.height, 360, 360);
-                return {
-                  ...node,
-                  title: targetUpdate!.asset.name,
-                  width: size.width,
-                  height: size.height,
-                  metadata: storedToMetadata(targetUpdate!.stored, { prompt: targetUpdate!.asset.prompt }),
-                };
-              })
-              : prev;
-            return [...withTarget, ...newNodes];
-          });
-          setSelectedIds([...(targetUpdate && targetNode ? [targetNode.id] : []), ...newNodes.map((node) => node.id)]);
+          setNodes((prev) => [...prev, ...newNodes]);
+          setSelectedIds(newNodes.map((node) => node.id));
           setSelectedConnectionIds([]);
           showToast(`已导入 ${imported.length} 张图片`, "success");
           return;
@@ -1886,7 +1863,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         maxSelected={200}
         allowFolderSelection
         onOpenChange={(open) => setAssetPicker((prev) => ({ ...prev, open }))}
-        onConfirm={(assets) => void handleAssetPickerConfirm(assets)}
+        onConfirm={(assets, options) => void handleAssetPickerConfirm(assets, options)}
         onConfirmFolder={(folder, assets) => void handleAssetFolderPickerConfirm(folder, assets)}
       />
       <AgentTextAssetPickerDialog open={textAssetPicker.open} onOpenChange={(open) => setTextAssetPicker((prev) => ({ ...prev, open }))} onConfirm={handleTextAssetPickerConfirm} />
