@@ -6,12 +6,13 @@ import { Download, FolderOpen, Frame, Layers, PanelLeftOpen, Plus, Trash2, Uploa
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { CanvasEditor } from "./CanvasEditor";
 import { CanvasThumbnail } from "./components/canvas-thumbnail";
 import { useCanvasStore } from "./stores/use-canvas-store";
-import { exportCanvasProjects, importCanvasProjectsFromZip } from "./utils/canvas-export";
+import { exportCanvasProjectImages, importCanvasProjectsFromZip } from "./utils/canvas-export";
 
 type CanvasWorkspaceProps = {
   wideMode?: boolean;
@@ -92,6 +93,14 @@ export function CanvasWorkspace({ wideMode, onConfigureApiKey, onEnableWideMode,
     }
   };
 
+  const handleDownloadImages = async (project: (typeof projects)[number], mode: "all" | "generated") => {
+    try {
+      await exportCanvasProjectImages(project, mode);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "下载失败", "error");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -158,9 +167,31 @@ export function CanvasWorkspace({ wideMode, onConfigureApiKey, onEnableWideMode,
                   <FolderOpen className="size-4" />
                   打开
                 </Button>
-                <Button variant="ghost" size="icon-sm" aria-label="导出" onClick={() => void exportCanvasProjects([project], project.title || "无限画布")}>
-                  <Download className="size-4" />
-                </Button>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label="下载图片">
+                      <Download className="size-4" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-40 p-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadImages(project, "all")}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      下载所有图
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadImages(project, "generated")}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      仅下载生成图
+                    </button>
+                  </PopoverContent>
+                </Popover>
                 <Button variant="ghost" size="icon-sm" aria-label="删除" onClick={() => setDeleteId(project.id)}>
                   <Trash2 className="size-4" />
                 </Button>

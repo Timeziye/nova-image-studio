@@ -660,7 +660,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       setDeleteFolderTarget(null);
       if (selectedFolderId === removedFolderId) setSelectedFolderId('unfiled');
       await reload();
-      dispatchImageActionToast('文件夹已删除，图片已移至未归档', 'success');
+      dispatchImageActionToast('文件夹及其中图片已删除', 'success');
     } catch (error) {
       dispatchImageActionToast(error instanceof Error ? error.message : '删除文件夹失败', 'error');
     }
@@ -1669,7 +1669,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       {deleteFolderTarget && createPortal(
         <ConfirmDialog
           title="删除文件夹"
-          message={`确定要删除文件夹「${deleteFolderTarget.name}」吗？文件夹内图片会移至未归档，不会删除图片。`}
+          message={`确定要删除文件夹「${deleteFolderTarget.name}」及其中 ${folderCounts.get(deleteFolderTarget.id) || 0} 张图片吗？此操作无法恢复。`}
           confirmText="删除文件夹"
           onConfirm={() => void confirmDeleteFolder()}
           onCancel={() => setDeleteFolderTarget(null)}

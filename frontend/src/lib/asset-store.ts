@@ -519,21 +519,23 @@ export async function deleteAssetFolder(folderId: string): Promise<void> {
   const db = await openAssetsDB();
   if (!db) throw new Error('当前浏览器不支持素材库本地存储');
   const assets = await getAllFromStore<AssetItem>(db, ASSETS_STORE);
-  const timestamp = now();
-  const updates = assets
+  const imageAssetsToDelete = assets
     .filter(isImageAsset)
-    .filter(asset => asset.folderId === folderId)
-    .map(asset => ({
-      ...asset,
-      folderId: undefined,
-      updatedAt: timestamp,
-    }));
+    .filter(asset => asset.folderId === folderId);
+  const deletedIds = new Set(imageAssetsToDelete.map(asset => asset.id));
+  const blobKeysToDelete = new Set(
+    imageAssetsToDelete
+      .filter(asset => !assets.some(item => isImageAsset(item) && !deletedIds.has(item.id) && item.blobKey === asset.blobKey))
+      .map(asset => asset.blobKey),
+  );
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([FOLDERS_STORE, ASSETS_STORE], 'readwrite');
+    const tx = db.transaction([FOLDERS_STORE, ASSETS_STORE, BLOBS_STORE], 'readwrite');
     tx.objectStore(FOLDERS_STORE).delete(folderId);
     const assetsStore = tx.objectStore(ASSETS_STORE);
-    for (const asset of updates) assetsStore.put(asset);
+    for (const asset of imageAssetsToDelete) assetsStore.delete(asset.id);
+    const blobsStore = tx.objectStore(BLOBS_STORE);
+    for (const blobKey of blobKeysToDelete) blobsStore.delete(blobKey);
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => {
       const error = tx.error || new Error('文件夹删除失败');

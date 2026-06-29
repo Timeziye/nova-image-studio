@@ -253,7 +253,6 @@ export function AgentAssetPickerDialog({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [mergeIntoGallery, setMergeIntoGallery] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const tagDragRef = useRef({ pointerId: -1, startX: 0, scrollLeft: 0, dragged: false });
   const [cols, setCols] = useState<number>(COLS.mobile);
   const [containerWidth, setContainerWidth] = useState(0);
 
@@ -420,12 +419,25 @@ export function AgentAssetPickerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-screen flex-col sm:h-auto sm:max-h-[90dvh] sm:w-full sm:max-w-5xl sm:rounded-xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Grid3X3 className="h-4 w-4" />
-            从素材库导入
-            <span className="text-xs font-normal text-muted-foreground">
-              已选 {selectedIds.size} / {maxSelected}
+          <DialogTitle className="flex flex-wrap items-center gap-3">
+            <span className="inline-flex items-center gap-2">
+              <Grid3X3 className="h-4 w-4" />
+              从素材库导入
+              <span className="text-xs font-normal text-muted-foreground">
+                已选 {selectedIds.size} / {maxSelected}
+              </span>
             </span>
+            {allowFolderSelection && selectionLimit > 1 && (
+              <label className="ml-auto inline-flex min-h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-xs font-normal">
+                <span className="text-foreground">合并显示</span>
+                <input
+                  type="checkbox"
+                  checked={mergeIntoGallery}
+                  onChange={(event) => setMergeIntoGallery(event.target.checked)}
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
+              </label>
+            )}
           </DialogTitle>
         </DialogHeader>
 
@@ -465,8 +477,8 @@ export function AgentAssetPickerDialog({
         </div>
 
         {allowFolderSelection && (folders.length > 0 || assets.some(asset => !asset.folderId)) && (
-          <div className="flex items-center gap-2 border-b pb-2">
-            <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto touch-pan-x select-none overscroll-x-contain [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+          <div className="flex min-h-14 resize-y items-start gap-2 overflow-auto border-b pb-2">
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1.5 pr-1">
               {[
                 { id: 'all', name: '全部', count: folderCounts.get('all') || 0 },
                 { id: 'unfiled', name: '未归档', count: folderCounts.get('unfiled') || 0 },
@@ -498,34 +510,7 @@ export function AgentAssetPickerDialog({
 
         {allTags.length > 0 && (
           <div
-            className="flex gap-1.5 overflow-x-auto border-b pb-2 touch-pan-x select-none overscroll-x-contain [&::-webkit-scrollbar]:hidden"
-            style={{ scrollbarWidth: 'none' }}
-            onPointerDown={event => {
-              const el = event.currentTarget;
-              if (!el || (event.pointerType === 'mouse' && event.button !== 0) || el.scrollWidth <= el.clientWidth) return;
-              tagDragRef.current = { pointerId: event.pointerId, startX: event.clientX, scrollLeft: el.scrollLeft, dragged: false };
-            }}
-            onPointerMove={event => {
-              const el = event.currentTarget;
-              const state = tagDragRef.current;
-              if (state.pointerId !== event.pointerId) return;
-              const deltaX = event.clientX - state.startX;
-              if (Math.abs(deltaX) > 4) state.dragged = true;
-              if (state.dragged) { el.scrollLeft = state.scrollLeft - deltaX; event.preventDefault(); }
-            }}
-            onPointerUp={() => {
-              tagDragRef.current.pointerId = -1;
-            }}
-            onPointerLeave={() => {
-              tagDragRef.current.pointerId = -1;
-              tagDragRef.current.dragged = false;
-            }}
-            onClickCapture={event => {
-              if (!tagDragRef.current.dragged) return;
-              event.preventDefault();
-              event.stopPropagation();
-              tagDragRef.current.dragged = false;
-            }}
+            className="flex min-h-14 max-h-40 resize-y flex-wrap gap-1.5 overflow-auto border-b pb-2 pr-1"
           >
             <button
               type="button"
@@ -547,21 +532,6 @@ export function AgentAssetPickerDialog({
           </div>
         )}
 
-        {allowFolderSelection && selectionLimit > 1 && (
-          <label className="flex min-h-8 items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2 text-xs">
-            <span className="min-w-0">
-              <span className="block font-medium text-foreground">合并显示</span>
-              <span className="block text-muted-foreground">关闭后，选中的图片会分别导入为多个图片节点。</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={mergeIntoGallery}
-              onChange={(event) => setMergeIntoGallery(event.target.checked)}
-              className="h-4 w-4 shrink-0 accent-primary"
-            />
-          </label>
-        )}
-
         {loading ? (
           <div className="flex min-h-48 items-center justify-center text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -574,7 +544,7 @@ export function AgentAssetPickerDialog({
         ) : (
           <div
             ref={scrollRef}
-            className="flex-1 min-h-0 overflow-y-auto"
+            className="min-h-48 flex-1 resize-y overflow-y-auto"
             style={{ scrollbarGutter: 'stable' }}
           >
             <div
