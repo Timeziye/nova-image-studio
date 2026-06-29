@@ -3,10 +3,12 @@
 import { useRef } from 'react';
 import { Bot, Film, Frame, Images, LibraryBig, ScanSearch, Sparkles } from 'lucide-react';
 import { TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
 
 interface WorkspaceModeTabsProps {
   wideMode?: boolean;
   showPromptGallery?: boolean;
+  collapsed?: boolean;
 }
 
 const horizontalTriggerClass =
@@ -25,7 +27,7 @@ const tabs = [
 
 const galleryTab = { value: 'prompt-gallery', icon: LibraryBig, label: '提示词广场' } as const;
 
-export function WorkspaceModeTabs({ wideMode = false, showPromptGallery = false }: WorkspaceModeTabsProps) {
+export function WorkspaceModeTabs({ wideMode = false, showPromptGallery = false, collapsed = false }: WorkspaceModeTabsProps) {
   const gridCols = showPromptGallery ? 'sm:grid-cols-7' : 'sm:grid-cols-6';
   const allTabs = showPromptGallery ? [...tabs, galleryTab] : tabs;
   const dragStateRef = useRef({
@@ -38,15 +40,19 @@ export function WorkspaceModeTabs({ wideMode = false, showPromptGallery = false 
   if (wideMode) {
     // 宽屏 → 垂直气泡侧边栏
     return (
-      <TabsList className="w-full flex-col gap-1.5 rounded-2xl border border-border bg-muted/50 p-2">
+      <TabsList className={cn("w-full flex-col gap-1.5 rounded-2xl border border-border bg-muted/50 p-2", collapsed && "items-center p-1.5")}>
         {allTabs.map(({ value, icon: Icon, label }) => (
           <TabsTrigger
             key={value}
             value={value}
-            className="flex flex-row items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-medium data-active:bg-card data-active:text-foreground data-active:shadow-sm"
+            title={label}
+            className={cn(
+              "flex flex-row items-center gap-2 rounded-xl text-xs font-medium data-active:bg-card data-active:text-foreground data-active:shadow-sm",
+              collapsed ? "size-10 justify-center px-0 py-0" : "px-3 py-2.5",
+            )}
           >
             <Icon className="size-5 shrink-0" />
-            <span>{label}</span>
+            <span className={collapsed ? "sr-only" : undefined}>{label}</span>
           </TabsTrigger>
         ))}
       </TabsList>

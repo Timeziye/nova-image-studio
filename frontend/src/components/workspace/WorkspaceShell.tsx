@@ -45,9 +45,12 @@ import {
 import { cn } from '@/lib/utils';
 import { BA_RANDOM_URL, BING_WALLPAPER_URL } from '@/lib/constants';
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'nova-sidebar-collapsed';
+
 export function WorkspaceShell() {
   const queueStatus = useQueueStatus();
   const { wideMode, toggleWideMode } = useWideMode();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [missingApiKeyDialogOpen, setMissingApiKeyDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +74,26 @@ export function WorkspaceShell() {
   }, []);
   const dismissToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  useEffect(() => {
+    try {
+      setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true');
+    } catch {
+      setSidebarCollapsed(false);
+    }
+  }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed(current => {
+      const next = !current;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
+      } catch {
+        // Storage can be unavailable in hardened/private browser modes.
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => subscribeImageActionToasts(detail => showToast(detail.message, detail.type)), [showToast]);
@@ -189,6 +212,8 @@ export function WorkspaceShell() {
         ? '图生图'
         : '当前模式';
 
+  const effectiveSidebarCollapsed = wideMode && sidebarCollapsed;
+
   const handleConfirmClearGeneration = useCallback(() => {
     if (!generationClearScope) return;
     const scope = generationClearScope;
@@ -209,7 +234,7 @@ export function WorkspaceShell() {
     <div
       className={cn(
         'mx-auto flex min-h-screen w-full flex-col gap-4 overflow-x-hidden px-3 py-3 transition-[max-width] duration-200 sm:gap-5 sm:px-6 sm:py-5 lg:px-8',
-        wideMode ? 'max-w-none xl:h-dvh xl:min-h-0 xl:gap-3 xl:py-3 xl:overflow-hidden' : 'max-w-5xl',
+        wideMode ? 'max-w-none h-dvh min-h-0 gap-3 py-3 overflow-hidden' : 'max-w-5xl',
         !wideMode && activeTab === 'agent' && 'h-dvh min-h-0 overflow-hidden'
       )}
     >
@@ -242,37 +267,61 @@ export function WorkspaceShell() {
             orientation={wideMode ? 'vertical' : 'horizontal'}
             className={cn(
               wideMode
-                ? 'gap-4 xl:flex-row xl:flex-1 xl:min-h-0'
+                ? 'flex flex-row flex-1 min-h-0'
                 : activeTab === 'agent'
                   ? 'gap-2 flex flex-col flex-1 min-h-0'
-                  : 'gap-2'
+                  : 'gap-2',
+              wideMode && (effectiveSidebarCollapsed ? 'gap-2' : 'gap-4')
             )}
           >
-            <div className={cn('flex flex-col', wideMode && 'self-stretch sticky top-4 h-full xl:shrink-0')}>
+            <div
+              className={cn(
+                'flex flex-col',
+                wideMode && 'self-stretch sticky top-4 h-full shrink-0 overflow-hidden transition-[width] duration-200',
+                wideMode && (effectiveSidebarCollapsed ? 'w-14' : 'w-56')
+              )}
+            >
               {wideMode && (
                 <button
                   type="button"
                   onClick={promptGallery.handlePromptGalleryEntry}
-                  className="flex items-center gap-2 px-2 pt-3 pb-1 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className={cn(
+                    "flex min-w-0 items-center gap-2 rounded-xl px-2 pt-3 pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    effectiveSidebarCollapsed && "justify-center px-1",
+                  )}
                   aria-label="Nova Image logo"
+                  title="Nova Image"
                 >
                   <img
                     src="/favicon.png"
                     alt="Nova Image"
                     className="h-8 w-8 shrink-0 rounded-lg object-cover ring-1 ring-border/60"
                   />
-                  <div className="min-w-0">
+                  <div className={cn("min-w-0", effectiveSidebarCollapsed && "sr-only")}>
                     <h2 className="truncate text-base font-semibold tracking-tight leading-tight">Nova Image</h2>
                     <p className="truncate text-[11px] text-muted-foreground leading-tight">批量 API 图像生成器</p>
                   </div>
                 </button>
               )}
-              <div className={cn(wideMode ? 'flex flex-col py-4 flex-1' : 'flex flex-col py-1')}>
-                <WorkspaceModeTabs wideMode={wideMode} showPromptGallery={promptGallery.showPromptGallery} />
+              {wideMode && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn("mx-2 mt-1 size-8 shrink-0 rounded-xl", effectiveSidebarCollapsed && "mx-auto")}
+                  onClick={toggleSidebarCollapsed}
+                  title={effectiveSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+                  aria-label={effectiveSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+                >
+                  {effectiveSidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                </Button>
+              )}
+              <div className={cn(wideMode ? 'flex flex-col py-4 flex-1' : 'flex flex-col py-1', effectiveSidebarCollapsed && 'items-center py-3')}>
+                <WorkspaceModeTabs wideMode={wideMode} showPromptGallery={promptGallery.showPromptGallery} collapsed={effectiveSidebarCollapsed} />
               </div>
 
-              {wideMode && (
-                <div className="hidden flex-col gap-1 xl:flex">
+              {wideMode && !effectiveSidebarCollapsed && (
+                <div className="flex flex-col gap-1">
                   <div className="flex flex-col gap-1">
                     <DropdownMenu modal={false}>
                       <DropdownMenuTrigger
@@ -337,18 +386,59 @@ export function WorkspaceShell() {
                     )}
                   </div>
                 </div>)}
+              {wideMode && effectiveSidebarCollapsed && (
+                <div className="flex flex-col items-center gap-1 pb-2">
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger
+                      className={cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'size-10 rounded-xl')}
+                      title="随机图片"
+                      aria-label="随机图片"
+                    >
+                      <Shuffle className="size-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" sideOffset={4}>
+                      <DropdownMenuItem onClick={() => headerRef.current?.openRandomImage(BA_RANDOM_URL, 'BA人物')}>
+                        <User className="w-4 h-4" />
+                        BA人物
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => headerRef.current?.openRandomImage(BING_WALLPAPER_URL, 'Bing壁纸')}>
+                        <Wallpaper className="w-4 h-4" />
+                        Bing壁纸
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <div className="[&_button]:size-10 [&_button]:justify-center [&_button]:rounded-xl [&_button]:px-0 [&_button_span]:hidden [&_button_svg]:size-4">
+                    <ThemeToggle />
+                  </div>
+                  <Button variant="outline" size="icon" className="size-10 rounded-xl" onClick={toggleWideMode} title="退出宽屏" aria-label="退出宽屏">
+                    <PanelLeftClose className="size-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" className="size-10 rounded-xl" onClick={() => setSettingsOpen(true)} title="设置" aria-label="设置">
+                    <Settings className="size-4" />
+                  </Button>
+                  {queueStatus && (
+                    <span
+                      className={cn(
+                        "mt-1 size-2 rounded-full",
+                        queueStatus.acceptingNewTasks ? "bg-emerald-500" : "bg-destructive",
+                      )}
+                      title={`并发 ${queueStatus.processingCount}，排队 ${queueStatus.queuedCount ?? 0}`}
+                    />
+                  )}
+                </div>
+              )}
             </div>
 
             <div className={cn(
-              wideMode && 'xl:flex xl:flex-1 xl:min-h-0 xl:min-w-0',
+              wideMode && 'flex flex-1 min-h-0 min-w-0',
               wideMode && (activeTab === 'image-generation' || activeTab === 'agent'
-                ? 'xl:overflow-hidden'
-                : 'xl:overflow-y-auto xl:overflow-x-hidden'),
+                ? 'overflow-hidden'
+                : 'overflow-y-auto overflow-x-hidden'),
               !wideMode && activeTab === 'agent' && 'flex flex-1 flex-col min-h-0'
             )}>
-              <TabsContent value="image-generation" keepMounted className={cn(wideMode ? 'space-y-6 xl:flex xl:min-h-0 xl:space-y-0' : 'space-y-3')}>
-                <div className={cn(wideMode ? 'grid items-start gap-5 xl:h-full xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(460px,0.95fr)_minmax(0,1.35fr)] xl:items-stretch' : 'space-y-3')}>
-                  <div className={cn(wideMode && 'xl:h-full xl:min-h-0 xl:overflow-y-auto xl:pr-1')}>
+              <TabsContent value="image-generation" keepMounted className={cn(wideMode ? 'flex min-h-0 space-y-0' : 'space-y-3')}>
+                <div className={cn(wideMode ? 'grid h-full min-h-0 flex-1 grid-cols-[minmax(360px,0.95fr)_minmax(0,1.35fr)] items-stretch gap-5' : 'space-y-3')}>
+                  <div className={cn(wideMode && 'h-full min-h-0 overflow-y-auto pr-1')}>
                     <ImageGenerationWorkbench
                       wideMode={wideMode}
                       onSubmitText={data => void submitTextToImage(data, submitActions, handleSubmitError)}
@@ -389,7 +479,7 @@ export function WorkspaceShell() {
               <TabsContent
                 value="agent"
                 keepMounted
-                className={cn('flex-1 flex flex-col min-h-0', wideMode && 'xl:flex xl:min-h-0 xl:flex-1 xl:flex-col')}
+                className={cn('flex-1 flex flex-col min-h-0', wideMode && 'flex min-h-0 flex-1 flex-col')}
               >
                 <AgentChatWorkspace
                   wideMode={wideMode}
@@ -398,7 +488,7 @@ export function WorkspaceShell() {
                 />
               </TabsContent>
 
-              <TabsContent value="canvas" keepMounted className={cn('min-h-0', wideMode ? 'xl:flex xl:min-h-0 xl:flex-1 xl:flex-col' : 'space-y-6')}>
+              <TabsContent value="canvas" keepMounted className={cn('min-h-0', wideMode ? 'flex min-h-0 flex-1 flex-col' : 'space-y-6')}>
                 <CanvasWorkspace
                   wideMode={wideMode}
                   onConfigureApiKey={() => setSettingsOpen(true)}
@@ -407,11 +497,11 @@ export function WorkspaceShell() {
                 />
               </TabsContent>
 
-              <TabsContent value="assets" keepMounted className={cn(wideMode ? 'space-y-6 xl:min-h-0 xl:min-w-0 xl:flex xl:flex-col' : 'space-y-6')}>
+              <TabsContent value="assets" keepMounted className={cn(wideMode ? 'flex min-h-0 min-w-0 flex-col space-y-6' : 'space-y-6')}>
                 <AssetsWorkspace wideMode={wideMode} active={activeTab === 'assets'} />
               </TabsContent>
 
-              <TabsContent value="reverse-prompt" keepMounted className={cn(wideMode ? 'space-y-6 xl:min-h-0 xl:flex xl:flex-col' : 'space-y-6')}>
+              <TabsContent value="reverse-prompt" keepMounted className={cn(wideMode ? 'flex min-h-0 flex-col space-y-6' : 'space-y-6')}>
                 <ReversePromptForm
                   wideMode={wideMode}
                   disabled={!workspace.hasApiKey}
@@ -419,7 +509,7 @@ export function WorkspaceShell() {
                 />
               </TabsContent>
 
-              <TabsContent value="gif" keepMounted className={cn(wideMode ? 'space-y-6 xl:min-h-0 xl:flex xl:flex-col' : 'space-y-6')}>
+              <TabsContent value="gif" keepMounted className={cn(wideMode ? 'flex min-h-0 flex-col space-y-6' : 'space-y-6')}>
                 <GifGenerationWorkspace
                   wideMode={wideMode}
                   hasApiKey={workspace.hasApiKey}

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { AlertCircle, Clock, FileText, Hash, Images, RefreshCw, Save, Upload } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -35,6 +35,12 @@ type CanvasNodeProps = {
   onConnectStart: (event: React.PointerEvent, nodeId: string, handleType: "source" | "target") => void;
   onResizeStart: (event: React.PointerEvent, nodeId: string, corner: ResizeCorner) => void;
   onContentChange: (nodeId: string, content: string) => void;
+  isRenaming?: boolean;
+  renameDraft?: string;
+  onRenameStart?: (nodeId: string) => void;
+  onRenameDraftChange?: (value: string) => void;
+  onRenameCommit?: () => void;
+  onRenameCancel?: () => void;
   onUploadToNode?: (nodeId: string) => void;
   onImportToNode?: (nodeId: string) => void;
   onImportTextToNode?: (nodeId: string) => void;
@@ -61,6 +67,12 @@ export const CanvasNode = React.memo(function CanvasNode({
   onConnectStart,
   onResizeStart,
   onContentChange,
+  isRenaming = false,
+  renameDraft,
+  onRenameStart,
+  onRenameDraftChange,
+  onRenameCommit,
+  onRenameCancel,
   onUploadToNode,
   onImportToNode,
   onImportTextToNode,
@@ -86,14 +98,34 @@ export const CanvasNode = React.memo(function CanvasNode({
       className="group absolute [&_button]:cursor-pointer"
       style={{ left: data.position.x, top: data.position.y, width: data.width, height: data.height, zIndex }}
       onPointerDown={(event) => onPointerDownNode(event, data.id)}
+      onDoubleClick={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("button, a, input, textarea, select, [role='textbox'], [data-canvas-no-zoom], [data-no-drag]")) return;
+        event.stopPropagation();
+        onRenameStart?.(data.id);
+      }}
       onContextMenu={(event) => onContextMenu(event, data.id)}
     >
       <div
         className="relative flex h-full w-full flex-col overflow-hidden rounded-2xl border-2 shadow-sm transition-[border-color,box-shadow]"
         style={{ borderColor, background: theme.node.fill, boxShadow }}
       >
-        <div className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium" style={{ color: theme.node.label }}>
-          <span className="truncate">{data.title}</span>
+        <div className="flex min-h-7 items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium" style={{ color: theme.node.label }}>
+          {isRenaming ? (
+            <NodeTitleInput value={renameDraft ?? data.title} onChange={onRenameDraftChange} onCommit={onRenameCommit} onCancel={onRenameCancel} />
+          ) : (
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left outline-none transition-colors hover:text-foreground"
+              title={data.title}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                onRenameStart?.(data.id);
+              }}
+            >
+              {data.title}
+            </button>
+          )}
         </div>
 
         <div className="relative min-h-0 flex-1">
@@ -204,7 +236,16 @@ function ImageNodeBody({
     <div className="relative h-full w-full">
       {/* 有图片时显示图片 */}
       {url && (
-        <img src={url} alt={data.title} className="h-full w-full object-contain" draggable={false} onDoubleClick={() => onOpenImage?.(data)} />
+        <img
+          src={url}
+          alt={data.title}
+          className="h-full w-full object-contain"
+          draggable={false}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            onOpenImage?.(data);
+          }}
+        />
       )}
 
       {/* 空状态：无图片且不在生成中 */}
@@ -262,6 +303,54 @@ function ImageNodeBody({
 }
 
 /** 生成状态 overlay：显示状态、用时、任务 ID。 */
+function NodeTitleInput({
+  value,
+  onChange,
+  onCommit,
+  onCancel,
+}: {
+  value: string;
+  onChange?: (value: string) => void;
+  onCommit?: () => void;
+  onCancel?: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const skipBlurCommitRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  return (
+    <input
+      ref={inputRef}
+      data-no-drag
+      data-canvas-no-zoom
+      aria-label="Rename node"
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+      onPointerDown={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onBlur={() => {
+        if (!skipBlurCommitRef.current) onCommit?.();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onCommit?.();
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          skipBlurCommitRef.current = true;
+          onCancel?.();
+        }
+      }}
+      className="h-5 min-w-0 flex-1 rounded-md border border-primary/45 bg-background/90 px-1.5 text-[11px] font-medium text-foreground outline-none ring-2 ring-primary/15"
+    />
+  );
+}
+
 function GenerationStatusOverlay({ data, status, onRefreshProgress }: { data: CanvasNodeData; status: string; onRefreshProgress?: (node: CanvasNodeData) => void | Promise<void> }) {
   const startedAt = data.metadata?.generationStartedAt;
   const taskId = data.metadata?.generationTaskId;

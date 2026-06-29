@@ -18,7 +18,7 @@ export function WideModeToggle({ enabled, onToggle }: WideModeToggleProps) {
       variant={enabled ? 'secondary' : 'outline'}
       size="sm"
       onClick={onToggle}
-      className="hidden gap-2 xl:inline-flex"
+      className="inline-flex gap-2"
       aria-pressed={enabled}
       title={label}
     >

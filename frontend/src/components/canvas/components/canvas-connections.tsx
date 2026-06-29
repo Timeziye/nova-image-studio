@@ -15,7 +15,7 @@ export function ConnectionPath({
   from: CanvasNodeData;
   to: CanvasNodeData;
   active: boolean;
-  onSelect: () => void;
+  onSelect: (event: ReactMouseEvent<SVGPathElement>) => void;
   onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
 }) {
   const theme = canvasTheme;
@@ -38,7 +38,7 @@ export function ConnectionPath({
         style={{ cursor: "pointer", pointerEvents: "stroke" }}
         onClick={(event) => {
           event.stopPropagation();
-          onSelect();
+          onSelect(event);
         }}
         onContextMenu={(event) => {
           event.preventDefault();

@@ -57,7 +57,7 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
     if (input) {
       let label = labelByNodeId.get(input.nodeId);
       if (!label) {
-        label = generationLabel(input.type, counts[input.type]++);
+        label = input.title.trim() || generationLabel(input.type, counts[input.type]++);
         labelByNodeId.set(input.nodeId, label);
         if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
         else selectedInputs.push(input);

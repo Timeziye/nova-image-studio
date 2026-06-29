@@ -126,9 +126,9 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
   useEffect(() => () => cleanupViewerObjectUrl(), [cleanupViewerObjectUrl]);
 
   return (
-    <header className={cn(sidebarMode ? 'xl:pb-0' : 'space-y-3 sm:space-y-5')}>
+    <header className={cn(sidebarMode ? 'pb-0' : 'space-y-3 sm:space-y-5')}>
       <div className="flex items-start justify-between gap-2 sm:gap-4">
-        <div className={cn("flex min-w-0 shrink-0 items-center gap-2 sm:gap-3", sidebarMode && 'xl:hidden')}>
+        <div className={cn("flex min-w-0 shrink-0 items-center gap-2 sm:gap-3", sidebarMode && 'hidden')}>
           <button
             type="button"
             onClick={onLogoClick}
@@ -148,7 +148,7 @@ export const WorkspaceHeader = forwardRef<WorkspaceHeaderRef, WorkspaceHeaderPro
         </div>
 
         {/* ── 按钮 + 状态区域（宽屏 sidebarMode 时隐藏） ── */}
-        <div className={cn('flex min-w-0 flex-1 items-center justify-end gap-1.5 sm:flex-none sm:flex-col sm:items-end sm:gap-2', sidebarMode && 'xl:hidden')}>
+        <div className={cn('flex min-w-0 flex-1 items-center justify-end gap-1.5 sm:flex-none sm:flex-col sm:items-end sm:gap-2', sidebarMode && 'hidden')}>
           <div className="order-1 flex min-w-0 flex-1 flex-wrap items-center justify-start gap-1 sm:order-2 sm:flex-none sm:justify-end sm:gap-2">
             {queueStatus ? (
               <>

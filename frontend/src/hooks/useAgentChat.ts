@@ -162,7 +162,7 @@ async function resultImageToBlob(ref: string): Promise<Blob> {
 
 export function useAgentChat() {
   const [ready, setReady] = useState(false);
-  const [hasApiKey] = useState(() => hasAnyApiKey());
+  const [hasApiKey, setHasApiKey] = useState(() => hasAnyApiKey());
   const [phase, setPhase] = useState<AgentPhase>('idle');
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [images, setImages] = useState<AgentImageRecord[]>([]);
@@ -195,6 +195,16 @@ export function useAgentChat() {
   const isReeditRef = useRef(false);
   /** 保存当前提案引用，生图完成后若 state proposal 已被清除时仍可获取 reason 等字段 */
   const proposalRef = useRef<AgentProposal | null>(null);
+
+  useEffect(() => {
+    const refreshApiKeyState = () => setHasApiKey(hasAnyApiKey());
+    window.addEventListener('nova-model-registry-updated', refreshApiKeyState);
+    window.addEventListener('storage', refreshApiKeyState);
+    return () => {
+      window.removeEventListener('nova-model-registry-updated', refreshApiKeyState);
+      window.removeEventListener('storage', refreshApiKeyState);
+    };
+  }, []);
 
   const getAgentTextModelConfig = useCallback(() => {
     const configured = getDefaultConfiguredTextModel('agent');

@@ -1,0 +1,29 @@
+services:
+  nova-image-studio:
+    build: .
+    container_name: nova-image-studio
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3010
+      HOSTNAME: 0.0.0.0
+      NOVA_TASK_DB: /data/nova-tasks.sqlite
+      NOVA_IMAGE_DIR: /data/nova-images
+      PROMPT_GALLERY_MODE: "1"
+      NOVA_SERVER_OPENAI_HOST: newapi.tynote.cn
+      NOVA_SERVER_OPENAI_BASE_URL: http://new-api:3000
+    ports:
+      - "127.0.0.1:3010:3010"
+    volumes:
+      - nova-image-data:/data
+    networks:
+      - default
+      - new-api-network
+
+volumes:
+  nova-image-data:
+
+networks:
+  new-api-network:
+    external: true
+    name: new-api_new-api-network

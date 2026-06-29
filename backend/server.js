@@ -96,6 +96,20 @@ function resolveNovaApiBaseUrl() {
   return normalizeBaseUrl(getRuntimeEnv().NOVA_API_BASE_URL) || 'https://api.openai.com';
 }
 
+function resolveServerOpenAiBaseUrl(baseUrl) {
+  const normalized = normalizeBaseUrl(baseUrl);
+  const override = normalizeBaseUrl(getRuntimeEnv().NOVA_SERVER_OPENAI_BASE_URL);
+  if (!override || !normalized) return normalized;
+
+  try {
+    const url = new URL(normalized);
+    const overrideHost = String(getRuntimeEnv().NOVA_SERVER_OPENAI_HOST || 'newapi.tynote.cn').trim();
+    return url.hostname === overrideHost ? override : normalized;
+  } catch {
+    return normalized;
+  }
+}
+
 function hashPromptGalleryPassword(password) {
   return createHash('sha256')
     .update(`${PROMPT_GALLERY_PASSWORD_SALT}${String(password || '')}`)
@@ -1072,7 +1086,9 @@ async function fetchWithTimeout(url, init) {
 
 async function generateNovaImage(apiKey, request) {
   // 开源版：根据前端传入的 protocol 字段路由到对应的 API 协议
-  const baseUrl = request.baseUrl || resolveNovaApiBaseUrl();
+  const baseUrl = request.protocol === 'openai'
+    ? resolveServerOpenAiBaseUrl(request.baseUrl || resolveNovaApiBaseUrl())
+    : (request.baseUrl || resolveNovaApiBaseUrl());
   if (request.protocol === 'openai') {
     return requestGptImage(apiKey, request, undefined, { baseUrl });
   }

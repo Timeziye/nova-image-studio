@@ -61,7 +61,8 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?
     const kind = resourceKind(node);
     if (!kind) return [];
     const index = counts[kind]++;
-    const label = labelForKind(kind, index);
+    const fallbackLabel = labelForKind(kind, index);
+    const label = node.title?.trim() || fallbackLabel;
     // 优先用已解析的 blob URL（刷新后 metadata.content 是失效的 blob URL，需要通过 storageKey 解析）
     const resolvedImage = node.metadata?.storageKey && imageUrls ? imageUrls[node.metadata.storageKey] : undefined;
     return [
@@ -70,7 +71,7 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean, imageUrls?
         nodeId: node.id,
         kind,
         label,
-        title: node.title || label,
+        title: fallbackLabel,
         previewUrl: kind === "image" ? (resolvedImage || node.metadata?.content) : undefined,
         text: node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : undefined,
         active,

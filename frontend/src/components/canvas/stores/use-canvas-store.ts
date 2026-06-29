@@ -37,6 +37,8 @@ const CANVAS_STORE_KEY = "nova-image:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let queuedPersistValue: StorageValue<CanvasStore> | null = null;
+let queuedPersistName: string | null = null;
 
 const canvasStorage: PersistStorage<CanvasStore> = {
   getItem: async (name) => {
@@ -50,14 +52,34 @@ const canvasStorage: PersistStorage<CanvasStore> = {
     const nextState = value.state as PersistedCanvasState;
     if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
     queuedPersistState = nextState;
+    queuedPersistValue = value;
+    queuedPersistName = name;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       saveTimer = null;
+      const pendingValue = queuedPersistValue;
+      const pendingName = queuedPersistName;
+      queuedPersistValue = null;
+      queuedPersistName = null;
+      if (!pendingValue || !pendingName) return;
       void localForageStorage.setItem(name, JSON.stringify(value));
     }, 400);
   },
   removeItem: (name) => localForageStorage.removeItem(name),
 };
+
+export async function flushCanvasStoreSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const pendingValue = queuedPersistValue;
+  const pendingName = queuedPersistName;
+  queuedPersistValue = null;
+  queuedPersistName = null;
+  if (!pendingValue || !pendingName) return;
+  await localForageStorage.setItem(pendingName, JSON.stringify(pendingValue));
+}
 
 export const useCanvasStore = create<CanvasStore>()(
   persist(

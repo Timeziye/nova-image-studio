@@ -23,7 +23,7 @@ import type { ImageActionPayload } from "@/lib/image-actions";
 import { CanvasCropDialog, CanvasUpscaleDialog, CanvasSplitDialog, CanvasAngleDialog } from "./components/canvas-node-dialogs";
 import { canvasTheme } from "./lib/canvas-theme";
 import { getNodeSpec } from "./constants";
-import { useCanvasStore } from "./stores/use-canvas-store";
+import { flushCanvasStoreSave, useCanvasStore } from "./stores/use-canvas-store";
 import { useCanvasConfigStore } from "./stores/use-canvas-config-store";
 import { CanvasApiKeyMissingError, submitNodeGeneration, pollNodeTask, checkExistingTask, type CanvasGeneratedImage } from "./canvas-generation-service";
 import { buildNodeGenerationContext, buildNodeGenerationInputs, hydrateNodeGenerationContext } from "./components/canvas-node-generation";
@@ -53,6 +53,37 @@ type CanvasEditorProps = {
 };
 
 const MAX_HISTORY = 50;
+const RESULT_GRID_X_OFFSET = 96;
+const RESULT_GRID_COLUMN_GAP = 420;
+const RESULT_GRID_ROW_GAP = 300;
+const CANVAS_MENTION_TOKEN_PATTERN = /@\[node:[^\]]+\]/g;
+
+function getResultGridColumns(count: number) {
+  return count <= 2 ? 1 : 2;
+}
+
+function getResultNodePosition(sourceNode: CanvasNodeData, index: number, count: number, yOffset = 0): Position {
+  const columns = getResultGridColumns(count);
+  const rows = Math.ceil(count / columns);
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const centeredYOffset = rows > 1 ? ((rows - 1) * RESULT_GRID_ROW_GAP) / 2 : 0;
+  return {
+    x: sourceNode.position.x + sourceNode.width + RESULT_GRID_X_OFFSET + column * RESULT_GRID_COLUMN_GAP,
+    y: sourceNode.position.y + yOffset - centeredYOffset + row * RESULT_GRID_ROW_GAP,
+  };
+}
+
+function getCanvasMentionTokens(text: string) {
+  return Array.from(new Set(text.match(CANVAS_MENTION_TOKEN_PATTERN) ?? []));
+}
+
+function preserveCanvasMentionTokens(original: string, optimized: string) {
+  const missingTokens = getCanvasMentionTokens(original).filter((token) => !optimized.includes(token));
+  if (!missingTokens.length) return optimized;
+  const trimmedOptimized = optimized.trim();
+  return `${missingTokens.join(" ")}${trimmedOptimized ? ` ${trimmedOptimized}` : ""}`;
+}
 
 function formatImageLabels(count: number) {
   const labels = Array.from({ length: count }, (_, index) => imageReferenceLabel(index));
@@ -149,6 +180,9 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   const [showImageInfo, setShowImageInfo] = useState(project?.showImageInfo ?? false);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([]);
+  const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
+  const [renameNodeDraft, setRenameNodeDraft] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [connecting, setConnecting] = useState<{ handle: ConnectionHandle; mouseWorld: Position; targetId?: string } | null>(null);
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
@@ -162,10 +196,11 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   const [viewportSize, setViewportSize] = useState({ width: 1280, height: 720 });
   const [miniMapOpen, setMiniMapOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
-  const [replaceConfirm, setReplaceConfirm] = useState<{ nodeId: string; stored: UploadedImage } | null>(null);
+  const [replaceConfirm, setReplaceConfirm] = useState<{ nodeId: string; stored: UploadedImage; title?: string } | null>(null);
   const [textReplaceConfirm, setTextReplaceConfirm] = useState<{ nodeId: string; content: string } | null>(null);
   const [fullscreenImageUrl, setFullscreenImageUrl] = useState<{ src: string; title: string; actionPayload?: ImageActionPayload } | null>(null);
   const [nodeZIndexMap, setNodeZIndexMap] = useState<Record<string, number>>({});
+  const [saveFeedbackVisible, setSaveFeedbackVisible] = useState(false);
   const topZIndexRef = useRef(1);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -182,6 +217,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   const clipboard = useRef<CanvasNodeData[]>([]);
   const activeGenerationsRef = useRef<Map<string, AbortController>>(new Map());
   const retryCooldownRef = useRef<Map<string, number>>(new Map());
+  const saveFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [undoStack, setUndoStack] = useState<HistorySnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<HistorySnapshot[]>([]);
 
@@ -281,6 +317,23 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
     setConnections(next.connections);
   }, [snapshot, redoStack]);
 
+  const saveCanvas = useCallback(async () => {
+    updateProject(projectId, { nodes, connections, viewport, backgroundMode, showImageInfo });
+    await flushCanvasStoreSave();
+    setSaveFeedbackVisible(true);
+    if (saveFeedbackTimerRef.current) clearTimeout(saveFeedbackTimerRef.current);
+    saveFeedbackTimerRef.current = setTimeout(() => {
+      setSaveFeedbackVisible(false);
+      saveFeedbackTimerRef.current = null;
+    }, 1600);
+  }, [backgroundMode, connections, nodes, projectId, showImageInfo, updateProject, viewport]);
+
+  useEffect(() => {
+    return () => {
+      if (saveFeedbackTimerRef.current) clearTimeout(saveFeedbackTimerRef.current);
+    };
+  }, []);
+
   const worldFromClient = useCallback(
     (clientX: number, clientY: number): Position => {
       const rect = containerRef.current?.getBoundingClientRect();
@@ -297,6 +350,40 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   // ---- node mutations ----
   const patchNode = useCallback((nodeId: string, patch: (node: CanvasNodeData) => CanvasNodeData) => {
     setNodes((prev) => prev.map((node) => (node.id === nodeId ? patch(node) : node)));
+  }, []);
+
+  const startRenameNode = useCallback(
+    (nodeId: string) => {
+      const node = nodes.find((item) => item.id === nodeId);
+      if (!node) return;
+      setSelectedIds([nodeId]);
+      setSelectedConnectionIds([]);
+      setRenamingNodeId(nodeId);
+      setRenameNodeDraft(node.title);
+    },
+    [nodes],
+  );
+
+  const commitRenameNode = useCallback(() => {
+    if (!renamingNodeId) return;
+    const node = nodes.find((item) => item.id === renamingNodeId);
+    if (!node) {
+      setRenamingNodeId(null);
+      setRenameNodeDraft("");
+      return;
+    }
+    const nextTitle = renameNodeDraft.trim();
+    if (nextTitle && nextTitle !== node.title) {
+      pushHistory();
+      patchNode(renamingNodeId, (item) => ({ ...item, title: nextTitle }));
+    }
+    setRenamingNodeId(null);
+    setRenameNodeDraft("");
+  }, [nodes, patchNode, pushHistory, renameNodeDraft, renamingNodeId]);
+
+  const cancelRenameNode = useCallback(() => {
+    setRenamingNodeId(null);
+    setRenameNodeDraft("");
   }, []);
 
   const createImageNode = useCallback((position: Position, partial?: Partial<CanvasNodeData>): CanvasNodeData => {
@@ -335,6 +422,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       };
       setNodes((prev) => [...prev, node]);
       setSelectedIds([node.id]);
+      setSelectedConnectionIds([]);
     },
     [defaultConfig, pushHistory, viewportCenterWorld],
   );
@@ -347,9 +435,32 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       setNodes((prev) => prev.filter((node) => !idSet.has(node.id)));
       setConnections((prev) => prev.filter((connection) => !idSet.has(connection.fromNodeId) && !idSet.has(connection.toNodeId)));
       setSelectedIds((prev) => prev.filter((id) => !idSet.has(id)));
+      setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((connection) => connection.id === id && !idSet.has(connection.fromNodeId) && !idSet.has(connection.toNodeId))));
+    },
+    [connections, pushHistory],
+  );
+
+  const deleteConnections = useCallback(
+    (ids: string[]) => {
+      if (!ids.length) return;
+      const idSet = new Set(ids);
+      pushHistory();
+      setConnections((prev) => prev.filter((connection) => !idSet.has(connection.id)));
+      setSelectedConnectionIds((prev) => prev.filter((id) => !idSet.has(id)));
     },
     [pushHistory],
   );
+
+  const deleteSelection = useCallback(() => {
+    if (!selectedIds.length && !selectedConnectionIds.length) return;
+    const nodeIdSet = new Set(selectedIds);
+    const connectionIdSet = new Set(selectedConnectionIds);
+    pushHistory();
+    setNodes((prev) => prev.filter((node) => !nodeIdSet.has(node.id)));
+    setConnections((prev) => prev.filter((connection) => !connectionIdSet.has(connection.id) && !nodeIdSet.has(connection.fromNodeId) && !nodeIdSet.has(connection.toNodeId)));
+    setSelectedIds([]);
+    setSelectedConnectionIds([]);
+  }, [pushHistory, selectedConnectionIds, selectedIds]);
 
   const duplicateNodes = useCallback(
     (ids: string[]) => {
@@ -360,29 +471,31 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       const clones = sources.map((node) => ({ ...node, id: nanoid(), position: { x: node.position.x + 32, y: node.position.y + 32 }, metadata: { ...node.metadata } }));
       setNodes((prev) => [...prev, ...clones]);
       setSelectedIds(clones.map((node) => node.id));
+      setSelectedConnectionIds([]);
     },
     [nodes, pushHistory],
   );
 
   // ---- image source: upload / asset library / save to assets ----
   const fillNodeWithStored = useCallback(
-    (nodeId: string, stored: UploadedImage) => {
+    (nodeId: string, stored: UploadedImage, title?: string) => {
       pushHistory();
       const size = fitNodeSize(stored.width, stored.height, 360, 360);
-      patchNode(nodeId, (node) => ({ ...node, width: size.width, height: size.height, metadata: { ...node.metadata, ...storedToMetadata(stored) } }));
+      const nextTitle = title?.trim();
+      patchNode(nodeId, (node) => ({ ...node, title: nextTitle || node.title, width: size.width, height: size.height, metadata: { ...node.metadata, ...storedToMetadata(stored) } }));
     },
     [patchNode, pushHistory],
   );
 
   // 填充前若已有图片，先弹「是否替换」确认。
   const fillNodeWithConfirm = useCallback(
-    (nodeId: string, stored: UploadedImage) => {
+    (nodeId: string, stored: UploadedImage, title?: string) => {
       const node = nodes.find((item) => item.id === nodeId);
       if (node?.metadata?.content) {
-        setReplaceConfirm({ nodeId, stored });
+        setReplaceConfirm({ nodeId, stored, title });
         return;
       }
-      fillNodeWithStored(nodeId, stored);
+      fillNodeWithStored(nodeId, stored, title);
     },
     [fillNodeWithStored, nodes],
   );
@@ -444,7 +557,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
           return;
         }
         const stored = await uploadImage(blob);
-        fillNodeWithConfirm(targetId, stored);
+        fillNodeWithConfirm(targetId, stored, asset.name);
       } catch {
         showToast("从素材库导入失败", "error");
       }
@@ -723,7 +836,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         if (targetIds.length < count) {
           const needed = count - targetIds.length;
           for (let i = 0; i < needed; i++) {
-            const node = createImageNode({ x: sourceNode.position.x + sourceNode.width + 80 + (targetIds.length + i) * 400, y: sourceNode.position.y + sourceNode.height + 60 });
+            const node = createImageNode(getResultNodePosition(sourceNode, targetIds.length + i, count, sourceNode.height + 72));
             targetIds.push(node.id);
             newConnections.push({ id: nanoid(), fromNodeId: sourceNode.id, toNodeId: node.id });
             setNodes((prev) => [...prev, node]);
@@ -735,7 +848,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       } else {
         // 非锁定模式：新建 count 个结果节点
         for (let i = 0; i < count; i++) {
-          const node = createImageNode({ x: sourceNode.position.x + sourceNode.width + 80 + i * 400, y: sourceNode.position.y });
+          const node = createImageNode(getResultNodePosition(sourceNode, i, count));
           targetIds.push(node.id);
           newConnections.push({ id: nanoid(), fromNodeId: sourceNode.id, toNodeId: node.id });
           setNodes((prev) => [...prev, node]);
@@ -919,6 +1032,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         nextSelection = [nodeId];
       }
       setSelectedIds(nextSelection);
+      if (!additive) setSelectedConnectionIds([]);
 
       // 点击交互元素（按钮 / 输入框 / 可编辑区 / 标记 data-no-drag 的区域）时只选中、不启动拖拽；
       // 其余区域（节点空白、面板留白、标题栏、图片）均可拖动整块节点。
@@ -938,6 +1052,16 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
     },
     [beginGesture, nodes, selectedIds],
   );
+
+  const handleConnectionSelect = useCallback((event: React.MouseEvent<SVGPathElement>, connectionId: string) => {
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    setContextMenu(null);
+    setSelectedConnectionIds((prev) => {
+      if (additive) return prev.includes(connectionId) ? prev.filter((id) => id !== connectionId) : [...prev, connectionId];
+      return [connectionId];
+    });
+    if (!additive) setSelectedIds([]);
+  }, []);
 
   const handleConnectStart = useCallback(
     (event: React.PointerEvent, nodeId: string, handleType: "source" | "target") => {
@@ -960,7 +1084,8 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
 
   const handleCanvasSelectionStart = useCallback(
     (event: React.PointerEvent) => {
-      const additive = event.shiftKey;
+      const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+      if (!additive) setSelectedConnectionIds([]);
       const world = worldFromClient(event.clientX, event.clientY);
       interaction.current = { kind: "selection", additive, initial: additive ? selectedIds : [] };
       setSelectionBox({ startWorldX: world.x, startWorldY: world.y, currentWorldX: world.x, currentWorldY: world.y, additive, initialSelectedNodeIds: additive ? selectedIds : [] });
@@ -1072,15 +1197,15 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         return;
       }
       if (event.key === "Delete" || event.key === "Backspace") {
-        if (selectedIds.length) {
+        if (selectedIds.length || selectedConnectionIds.length) {
           event.preventDefault();
-          deleteNodes(selectedIds);
+          deleteSelection();
         }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [deleteNodes, nodes, pushHistory, redo, selectedIds, undo]);
+  }, [deleteSelection, nodes, pushHistory, redo, selectedConnectionIds.length, selectedIds, undo]);
 
   // ---- 粘贴图片/文本：选中单个同类节点则填充，否则在视口中心新建 ----
   useEffect(() => {
@@ -1231,7 +1356,11 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         }
 
         const mode = hasPromptGalleryRoles ? "canvas-prompt-gallery-config" : images.length > 0 ? "image-to-image" : "text-to-image";
+        const mentionTokens = getCanvasMentionTokens(promptText);
         const context = [
+          mentionTokens.length
+            ? `必须原样保留这些画布节点引用 token，不要删除、改写、翻译或替换成节点名称：${mentionTokens.join(" ")}。这些 token 会在画布里渲染为 @图片/@文本 芯片。`
+            : "",
           hasPromptGalleryRoles
             ? "这是提示词广场导入的配置节点。优化时不要读取模板参考图，只使用已提供的目标角色/OC图；不要把目标角色/OC图转写成外貌文字，请保留并强化对用户上传角色图的引用，让生图模型直接参考图片理解角色。"
             : "",
@@ -1265,12 +1394,13 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
 
   const handleOptimizeAccept = useCallback(() => {
     if (optimizedText && optimizeNodeId) {
-      patchNode(optimizeNodeId, (node) => ({ ...node, metadata: { ...node.metadata, composerContent: optimizedText } }));
+      const nextPrompt = preserveCanvasMentionTokens(optimizeOriginalPrompt, optimizedText);
+      patchNode(optimizeNodeId, (node) => ({ ...node, metadata: { ...node.metadata, composerContent: nextPrompt } }));
     }
     optimizeHandleRef.current = null;
     setOptimizedText("");
     setOptimizeError(null);
-  }, [optimizedText, optimizeNodeId, patchNode]);
+  }, [optimizedText, optimizeNodeId, optimizeOriginalPrompt, patchNode]);
 
   const selectionRect = useMemo(() => {
     if (!selectionBox) return null;
@@ -1322,7 +1452,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         backgroundMode={backgroundMode}
         onViewportChange={setViewport}
         onCanvasMouseDown={handleCanvasSelectionStart}
-        onCanvasDeselect={() => { setSelectedIds([]); setContextMenu(null); if (titleDraft !== null) { renameProject(projectId, titleDraft); setTitleDraft(null); } }}
+        onCanvasDeselect={() => { setSelectedIds([]); setSelectedConnectionIds([]); setContextMenu(null); if (titleDraft !== null) { renameProject(projectId, titleDraft); setTitleDraft(null); } }}
         onContextMenu={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
@@ -1334,10 +1464,23 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
             const from = nodeById(connection.fromNodeId);
             const to = nodeById(connection.toNodeId);
             if (!from || !to) return null;
-            const active = selectedIds.includes(connection.fromNodeId) || selectedIds.includes(connection.toNodeId);
+            const active = selectedConnectionIds.includes(connection.id) || selectedIds.includes(connection.fromNodeId) || selectedIds.includes(connection.toNodeId);
             return (
               <g key={connection.id} className="pointer-events-auto">
-                <ConnectionPath connection={connection} from={from} to={to} active={active} onSelect={() => undefined} onContextMenu={(event) => setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId: connection.id })} />
+                <ConnectionPath
+                  connection={connection}
+                  from={from}
+                  to={to}
+                  active={active}
+                  onSelect={(event) => handleConnectionSelect(event, connection.id)}
+                  onContextMenu={(event) => {
+                    if (!selectedConnectionIds.includes(connection.id)) {
+                      setSelectedIds([]);
+                      setSelectedConnectionIds([connection.id]);
+                    }
+                    setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId: connection.id });
+                  }}
+                />
               </g>
             );
           })}
@@ -1358,15 +1501,24 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
               zIndex={nodeZIndexMap[node.id] ?? 1}
               showImageInfo={showImageInfo}
               onPointerDownNode={handleNodePointerDown}
-              onSelectNode={(id) => { if (!selectedIds.includes(id)) setSelectedIds([id]); }}
+              onSelectNode={(id) => { if (!selectedIds.includes(id)) setSelectedIds([id]); setSelectedConnectionIds([]); }}
               onContextMenu={(event, id) => {
                 event.preventDefault();
-                if (!selectedIds.includes(id)) setSelectedIds([id]);
+                if (!selectedIds.includes(id)) {
+                  setSelectedIds([id]);
+                  setSelectedConnectionIds([]);
+                }
                 setContextMenu({ type: "node", x: event.clientX, y: event.clientY, nodeId: id });
               }}
               onConnectStart={handleConnectStart}
               onResizeStart={handleResizeStart}
               onContentChange={handleTextChange}
+              isRenaming={renamingNodeId === node.id}
+              renameDraft={renamingNodeId === node.id ? renameNodeDraft : node.title}
+              onRenameStart={startRenameNode}
+              onRenameDraftChange={setRenameNodeDraft}
+              onRenameCommit={commitRenameNode}
+              onRenameCancel={cancelRenameNode}
               onUploadToNode={handleNodeUpload}
               onImportToNode={handleNodeImport}
               onImportTextToNode={handleTextNodeImport}
@@ -1456,9 +1608,10 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
       </div>
 
       <CanvasToolbar
-        selectedCount={selectedIds.length}
+        selectedCount={selectedIds.length + selectedConnectionIds.length}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
+        saveFeedbackVisible={saveFeedbackVisible}
         backgroundMode={backgroundMode}
         showImageInfo={showImageInfo}
         onAddImage={() => addNode(CanvasNodeType.Image)}
@@ -1467,7 +1620,8 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         onImportPromptGallery={() => setPromptGalleryOpen(true)}
         onUndo={undo}
         onRedo={redo}
-        onDelete={() => deleteNodes(selectedIds)}
+        onSave={() => void saveCanvas()}
+        onDelete={deleteSelection}
         onBackgroundModeChange={setBackgroundMode}
         onShowImageInfoChange={setShowImageInfo}
       />
@@ -1520,8 +1674,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
           onAngle: () => contextNode && openDialog("angle", contextNode),
           onDeleteConnection: () => {
             if (contextMenu?.type === "connection") {
-              pushHistory();
-              setConnections((prev) => prev.filter((connection) => connection.id !== contextMenu.connectionId));
+              deleteConnections([contextMenu.connectionId]);
             }
           },
         }}
@@ -1555,7 +1708,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
             </Button>
             <Button
               onClick={() => {
-                if (replaceConfirm) fillNodeWithStored(replaceConfirm.nodeId, replaceConfirm.stored);
+                if (replaceConfirm) fillNodeWithStored(replaceConfirm.nodeId, replaceConfirm.stored, replaceConfirm.title);
                 setReplaceConfirm(null);
               }}
             >

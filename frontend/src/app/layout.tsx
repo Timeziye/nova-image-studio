@@ -59,7 +59,7 @@ export default function RootLayout({
               (function() {
                 try {
                   var stored = window.localStorage.getItem('nova-wide-mode');
-                  var wide = stored === 'enabled' && window.innerWidth >= 1280;
+                  var wide = stored === 'enabled';
                   if (wide) {
                     document.documentElement.setAttribute('data-wide-mode', '');
                   }

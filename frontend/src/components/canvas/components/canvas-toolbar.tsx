@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleDot, Grid2x2, Image as ImageIcon, Info, LibraryBig, Redo2, Settings2, Square, Trash2, Type, Undo2 } from "lucide-react";
+import { CircleDot, Grid2x2, Image as ImageIcon, Info, LibraryBig, Redo2, Save, Settings2, Square, Trash2, Type, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/toggle-group";
@@ -12,6 +12,7 @@ type CanvasToolbarProps = {
   selectedCount: number;
   canUndo: boolean;
   canRedo: boolean;
+  saveFeedbackVisible: boolean;
   backgroundMode: CanvasBackgroundMode;
   showImageInfo: boolean;
   onAddImage: () => void;
@@ -20,6 +21,7 @@ type CanvasToolbarProps = {
   onImportPromptGallery: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onSave: () => void;
   onDelete: () => void;
   onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
   onShowImageInfoChange: (value: boolean) => void;
@@ -29,6 +31,7 @@ export function CanvasToolbar({
   selectedCount,
   canUndo,
   canRedo,
+  saveFeedbackVisible,
   backgroundMode,
   showImageInfo,
   onAddImage,
@@ -37,6 +40,7 @@ export function CanvasToolbar({
   onImportPromptGallery,
   onUndo,
   onRedo,
+  onSave,
   onDelete,
   onBackgroundModeChange,
   onShowImageInfoChange,
@@ -80,6 +84,21 @@ export function CanvasToolbar({
           <Redo2 className="size-4" />
         </Button>
       </CanvasTooltip>
+
+      <div className="mx-1 h-5 w-px bg-border" />
+
+      <div className="relative">
+        <CanvasTooltip label="保存画布">
+          <Button variant="ghost" size="icon-sm" onClick={onSave} aria-label="保存画布">
+            <Save className="size-4" />
+          </Button>
+        </CanvasTooltip>
+        {saveFeedbackVisible && (
+          <div className="pointer-events-none absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-foreground shadow-lg">
+            已保存
+          </div>
+        )}
+      </div>
 
       <div className="mx-1 h-5 w-px bg-border" />
 
