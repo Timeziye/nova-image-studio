@@ -72,16 +72,19 @@ interface AssetsWorkspaceProps {
 }
 
 const SETTINGS_KEY = 'nova-assets-settings';
+const SETTINGS_VERSION = 2;
 const PAGE_SIZE = 48;
 const PROMPT_TAG = '提示词';
-type AssetSort = 'manual' | 'newest' | 'oldest' | 'used';
+type AssetSort = 'name-asc' | 'name-desc' | 'manual' | 'newest' | 'oldest' | 'used';
 type FolderFilterId = 'all' | 'unfiled' | string;
 
 const SORT_OPTIONS: Array<{ value: AssetSort; label: string }> = [
-  { value: 'manual', label: '自定义排序' },
+  { value: 'name-asc', label: '名称' },
+  { value: 'name-desc', label: '名称倒序' },
   { value: 'newest', label: '最新添加' },
   { value: 'oldest', label: '最早添加' },
   { value: 'used', label: '最近使用' },
+  { value: 'manual', label: '自定义排序' },
 ];
 const VIEW_SIZE_OPTIONS: Array<{ value: AssetViewSize; label: string }> = [
   { value: 'compact', label: '小' },
@@ -89,13 +92,22 @@ const VIEW_SIZE_OPTIONS: Array<{ value: AssetViewSize; label: string }> = [
   { value: 'large', label: '详细' },
 ];
 type AssetViewSize = 'compact' | 'normal' | 'large';
-type AssetSettings = { sort: AssetSort; viewSize: AssetViewSize; folderId?: FolderFilterId };
+type AssetSettings = { version?: number; sort: AssetSort; viewSize: AssetViewSize; folderId?: FolderFilterId };
 
 export function loadAssetSettings(): AssetSettings {
-  if (typeof window === 'undefined') return { sort: 'newest', viewSize: 'normal', folderId: 'all' };
+  if (typeof window === 'undefined') return { version: SETTINGS_VERSION, sort: 'name-asc', viewSize: 'normal', folderId: 'all' };
   const saved = loadJsonFromStorage<AssetSettings>(SETTINGS_KEY);
+  if (saved.version !== SETTINGS_VERSION) {
+    return {
+      version: SETTINGS_VERSION,
+      sort: 'name-asc',
+      viewSize: saved.viewSize === 'compact' || saved.viewSize === 'large' ? saved.viewSize : 'normal',
+      folderId: saved.folderId || 'all',
+    };
+  }
   return {
-    sort: saved.sort === 'manual' || saved.sort === 'oldest' || saved.sort === 'used' ? saved.sort : 'newest',
+    version: SETTINGS_VERSION,
+    sort: saved.sort === 'manual' || saved.sort === 'name-desc' || saved.sort === 'newest' || saved.sort === 'oldest' || saved.sort === 'used' ? saved.sort : 'name-asc',
     viewSize: saved.viewSize === 'compact' || saved.viewSize === 'large' ? saved.viewSize : 'normal',
     folderId: saved.folderId || 'all',
   };
@@ -155,6 +167,40 @@ async function prepareAssetMetadataImage(asset: ImageAsset, blob: Blob): Promise
 function getTextEntryName(asset: TextAsset): string {
   const content = asset.content.trim().split(/\s+/).join('-').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 80);
   return `${content || asset.id}.txt`;
+}
+
+function getAssetDisplayName(asset: AssetItem): string {
+  return isTextAsset(asset) ? asset.content.trim().slice(0, 80) || '提示词素材' : asset.name;
+}
+
+function compareText(a: string, b: string): number {
+  return a.localeCompare(b, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+}
+
+function compareAssetsBySort(a: AssetItem, b: AssetItem, sort: AssetSort): number {
+  if (sort === 'manual') {
+    if (isTextAsset(a) && !isTextAsset(b)) return 1;
+    if (!isTextAsset(a) && isTextAsset(b)) return -1;
+    if (isImageAsset(a) && isImageAsset(b)) return (a.order || a.createdAt || 0) - (b.order || b.createdAt || 0);
+    return compareText(getAssetDisplayName(a), getAssetDisplayName(b));
+  }
+  if (sort === 'name-desc') return compareText(getAssetDisplayName(b), getAssetDisplayName(a));
+  if (sort === 'newest') return b.createdAt - a.createdAt || compareText(getAssetDisplayName(a), getAssetDisplayName(b));
+  if (sort === 'oldest') return a.createdAt - b.createdAt || compareText(getAssetDisplayName(a), getAssetDisplayName(b));
+  if (sort === 'used') {
+    return (b.lastUsedAt || b.updatedAt || b.createdAt) - (a.lastUsedAt || a.updatedAt || a.createdAt)
+      || compareText(getAssetDisplayName(a), getAssetDisplayName(b));
+  }
+  return compareText(getAssetDisplayName(a), getAssetDisplayName(b));
+}
+
+function compareFoldersBySort(a: AssetFolder, b: AssetFolder, sort: AssetSort): number {
+  if (sort === 'manual') return (a.order || 0) - (b.order || 0) || compareText(a.name, b.name);
+  if (sort === 'name-desc') return compareText(b.name, a.name);
+  if (sort === 'newest') return b.createdAt - a.createdAt || compareText(a.name, b.name);
+  if (sort === 'oldest') return a.createdAt - b.createdAt || compareText(a.name, b.name);
+  if (sort === 'used') return b.updatedAt - a.updatedAt || compareText(a.name, b.name);
+  return compareText(a.name, b.name);
 }
 
 function matchesAsset(asset: AssetItem, query: string, tag: string, source: string): boolean {
@@ -336,7 +382,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   }, [active, reload]);
 
   useEffect(() => {
-    saveJsonToStorage(SETTINGS_KEY, { sort, viewSize, folderId: selectedFolderId });
+    saveJsonToStorage(SETTINGS_KEY, { version: SETTINGS_VERSION, sort, viewSize, folderId: selectedFolderId });
   }, [selectedFolderId, sort, viewSize]);
 
   const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
@@ -347,39 +393,34 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       : folderById.get(selectedFolderId)?.name || '文件夹';
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    counts.set('all', assets.length);
-    counts.set('unfiled', assets.filter(asset => isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId)).length);
+    const unfiledCount = assets.filter(asset => isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId)).length;
+    counts.set('all', folders.length + unfiledCount);
+    counts.set('unfiled', unfiledCount);
     for (const folder of folders) counts.set(folder.id, assets.filter(asset => isImageAsset(asset) && asset.folderId === folder.id).length);
     return counts;
   }, [assets, folders]);
-  const canReorderImages = selectedFolderId !== 'all' && !debouncedQuery && !selectedTag && !selectedSource;
+  const canReorderFolders = sort === 'manual' && !debouncedQuery && !selectedTag && !selectedSource;
+  const canReorderImages = sort === 'manual' && selectedFolderId !== 'all' && !debouncedQuery && !selectedTag && !selectedSource;
+
+  const filteredFolders = useMemo(() => {
+    if (selectedFolderId !== 'all' || selectedTag || selectedSource) return [];
+    const q = debouncedQuery.trim().toLowerCase();
+    return folders
+      .filter(folder => !q || folder.name.toLowerCase().includes(q))
+      .sort((a, b) => compareFoldersBySort(a, b, sort));
+  }, [debouncedQuery, folders, selectedFolderId, selectedSource, selectedTag, sort]);
 
   const filteredAssets = useMemo(() => {
     const folderFiltered = assets.filter(asset => {
-      if (selectedFolderId === 'all') return true;
+      if (selectedFolderId === 'all') return isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId);
       if (selectedFolderId === 'unfiled') return isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId);
       return isImageAsset(asset) && asset.folderId === selectedFolderId;
     });
     const filtered = folderFiltered.filter(asset => matchesAsset(asset, debouncedQuery, selectedTag, selectedSource));
-    if (sort === 'manual') {
-      return filtered.sort((a, b) => {
-        if (isTextAsset(a) && !isTextAsset(b)) return 1;
-        if (!isTextAsset(a) && isTextAsset(b)) return -1;
-        if (isImageAsset(a) && isImageAsset(b)) {
-          return (a.order || a.createdAt || 0) - (b.order || b.createdAt || 0);
-        }
-        return b.createdAt - a.createdAt;
-      });
-    }
-    if (sort === 'oldest') {
-      return filtered.sort((a, b) => a.createdAt - b.createdAt);
-    }
-    if (sort === 'used') {
-      return filtered.sort((a, b) => (b.lastUsedAt || b.updatedAt || b.createdAt) - (a.lastUsedAt || a.updatedAt || a.createdAt));
-    }
-    return filtered.sort((a, b) => b.createdAt - a.createdAt);
+    return filtered.sort((a, b) => compareAssetsBySort(a, b, sort));
   }, [assets, debouncedQuery, selectedFolderId, selectedSource, selectedTag, sort]);
 
+  const currentItemCount = filteredFolders.length + filteredAssets.length;
   const visibleAssets = useMemo(() => filteredAssets.slice(0, visibleCount), [filteredAssets, visibleCount]);
   useEffect(() => {
     if (!active) return;
@@ -422,7 +463,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   const selectedImageCount = selectedImageAssets.length;
   const allVisibleSelected = visibleAssets.length > 0 && visibleAssets.every(asset => selectedAssetIds.has(asset.id));
   const selectedSourceLabel = selectedSource ? getSourceKindLabel(selectedSource as AssetSourceKind) : '全部来源';
-  const sortLabel = SORT_OPTIONS.find(option => option.value === sort)?.label || '最新添加';
+  const sortLabel = SORT_OPTIONS.find(option => option.value === sort)?.label || '名称';
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -632,7 +673,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
   }, [reload, selectedImageAssets]);
 
   const handleFolderDrop = useCallback(async (targetFolderId: string) => {
-    if (!draggingFolderId || draggingFolderId === targetFolderId) return;
+    if (!canReorderFolders || !draggingFolderId || draggingFolderId === targetFolderId) return;
     const fromIndex = folders.findIndex(folder => folder.id === draggingFolderId);
     const toIndex = folders.findIndex(folder => folder.id === targetFolderId);
     if (fromIndex < 0 || toIndex < 0) return;
@@ -647,7 +688,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
       await reload();
       dispatchImageActionToast(error instanceof Error ? error.message : '文件夹排序失败', 'error');
     }
-  }, [draggingFolderId, folders, reload]);
+  }, [canReorderFolders, draggingFolderId, folders, reload]);
 
   const handleAssetDrop = useCallback(async (targetAssetId: string) => {
     if (!draggingAssetId || draggingAssetId === targetAssetId || !canReorderImages) return;
@@ -757,7 +798,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
         <div className="space-y-1">
           <h3 className="text-base font-medium text-foreground">我的素材</h3>
           <div className="flex flex-wrap items-center gap-3">
-            <p className="text-xs text-muted-foreground">共 {assets.length} 项 · {selectedFolderName} {filteredAssets.length} 项</p>
+            <p className="text-xs text-muted-foreground">共 {assets.length} 项素材 · {selectedFolderName} {currentItemCount} 项</p>
             <StorageEstimate totalBytes={totalBytes} />
           </div>
         </div>
@@ -868,13 +909,14 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
             return (
               <div
                 key={folder.id}
-                draggable
+                draggable={canReorderFolders}
                 onDragStart={event => {
+                  if (!canReorderFolders) return;
                   setDraggingFolderId(folder.id);
                   event.dataTransfer.effectAllowed = 'move';
                 }}
                 onDragOver={event => {
-                  if (draggingFolderId && draggingFolderId !== folder.id) event.preventDefault();
+                  if (canReorderFolders && draggingFolderId && draggingFolderId !== folder.id) event.preventDefault();
                 }}
                 onDrop={event => {
                   event.preventDefault();
@@ -884,6 +926,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                 className={cn(
                   'group inline-flex min-h-8 shrink-0 items-center rounded-lg border transition-colors',
                   selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted',
+                  canReorderFolders && 'cursor-move',
                   draggingFolderId === folder.id && 'opacity-50'
                 )}
               >
@@ -893,7 +936,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                   onClick={() => setSelectedFolderId(folder.id)}
                   title={folder.name}
                 >
-                  <GripVertical className="h-3.5 w-3.5 opacity-55" />
+                  {canReorderFolders && <GripVertical className="h-3.5 w-3.5 opacity-55" />}
                   <Folder className="h-3.5 w-3.5" />
                   <span className="max-w-28 truncate">{folder.name}</span>
                   <span className="opacity-70">{folderCounts.get(folder.id) || 0}</span>
@@ -1078,7 +1121,7 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
         <div className="flex min-h-60 items-center justify-center text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
         </div>
-      ) : visibleAssets.length === 0 ? (
+      ) : filteredFolders.length === 0 && visibleAssets.length === 0 ? (
         <div className="flex min-h-72 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-card/40 p-8 text-center text-muted-foreground">
           <ImageIcon className="h-8 w-8 opacity-60" />
           <p className="text-sm">{assets.length === 0 ? '暂无素材' : '没有匹配的素材'}</p>
@@ -1094,6 +1137,74 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
           wideMode && viewSize === 'normal' && 'xl:min-h-0 xl:flex-1 xl:auto-rows-max xl:items-start xl:overflow-y-auto xl:pr-1 2xl:grid-cols-5',
           wideMode && viewSize === 'large' && 'xl:min-h-0 xl:flex-1 xl:auto-rows-max xl:items-start xl:overflow-y-auto xl:pr-1 2xl:grid-cols-3'
         )}>
+          {filteredFolders.map(folder => (
+            <div
+              key={folder.id}
+              draggable={canReorderFolders}
+              onDragStart={event => {
+                if (!canReorderFolders) return;
+                setDraggingFolderId(folder.id);
+                event.dataTransfer.effectAllowed = 'move';
+              }}
+              onDragOver={event => {
+                if (canReorderFolders && draggingFolderId && draggingFolderId !== folder.id) event.preventDefault();
+              }}
+              onDrop={event => {
+                event.preventDefault();
+                void handleFolderDrop(folder.id);
+              }}
+              onDragEnd={() => setDraggingFolderId(null)}
+              className={cn(
+                'relative overflow-hidden rounded-lg border bg-card transition-colors hover:border-muted-foreground/40',
+                viewSize === 'large' && 'sm:flex sm:min-h-32',
+                canReorderFolders && 'cursor-move',
+                draggingFolderId === folder.id && 'opacity-50'
+              )}
+            >
+              <button
+                type="button"
+                className={cn(
+                  'flex w-full min-w-0 flex-col items-center justify-center gap-2 p-4 text-center',
+                  viewSize === 'compact' && 'min-h-28 p-3',
+                  viewSize === 'normal' && 'min-h-36',
+                  viewSize === 'large' && 'sm:min-h-32 sm:flex-row sm:justify-start sm:text-left'
+                )}
+                onClick={() => setSelectedFolderId(folder.id)}
+                title={folder.name}
+              >
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                  <Folder className="h-8 w-8" />
+                </div>
+                <div className="min-w-0">
+                  <p className={cn('truncate font-medium text-foreground', viewSize === 'compact' ? 'text-xs' : 'text-sm')}>
+                    {folder.name}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">{folderCounts.get(folder.id) || 0} 项</p>
+                </div>
+              </button>
+              {canReorderFolders && (
+                <div
+                  draggable
+                  onDragStart={event => {
+                    setDraggingFolderId(folder.id);
+                    event.dataTransfer.effectAllowed = 'move';
+                  }}
+                  className="absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm"
+                  title="拖动排序"
+                >
+                  <GripVertical className="h-3.5 w-3.5" />
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => openRenameFolderDialog(folder)}
+                className="absolute bottom-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="重命名文件夹"
+              >
+                <FolderPen className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
           {visibleAssets.map((asset) => {
             const selected = selectedAssetIds.has(asset.id);
             if (isTextAsset(asset)) {
@@ -1173,7 +1284,15 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                   />
                 </label>
                 {canReorderImages && (
-                  <div className="absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm" title="拖动排序">
+                  <div
+                    draggable
+                    onDragStart={event => {
+                      setDraggingAssetId(asset.id);
+                      event.dataTransfer.effectAllowed = 'move';
+                    }}
+                    className="absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm"
+                    title="拖动排序"
+                  >
                     <GripVertical className="h-3.5 w-3.5" />
                   </div>
                 )}
