@@ -1243,7 +1243,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
               const hydrated = await hydrateNodeGenerationContext(next.item.context);
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
               if (!latestControl || latestControl.cancelled || latestControl.cancelledNodeIds.has(next.node.id)) return;
-              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id, { waitForCompletion: false });
+              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
             } finally {
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
               if (latestControl && !latestControl.cancelled && !latestControl.cancelledNodeIds.has(next.node.id)) {
