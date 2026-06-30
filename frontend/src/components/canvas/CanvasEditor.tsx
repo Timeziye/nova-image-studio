@@ -1214,7 +1214,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
           const sourceColumnOffset = sourceColumnOffsets.get(item.input.nodeId) || 0;
           const node = createImageNode(
             getPairwiseResultNodePosition(sourceNode, inputNode, index, pairwiseContexts.length, sourceColumnOffset, indexInSource),
-            { metadata: { status: "queued" } },
+            { metadata: { status: "queued", pairwiseGenerationContext: item.context } },
           );
           return { item, node };
         });
@@ -1334,7 +1334,8 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
       if (!promptText) { showToast("无法获取提示词", "info"); return; }
 
       void (async () => {
-        const context = sourceNode ? buildNodeGenerationContext(sourceNode.id, nodes, connections, promptText) : { prompt: promptText, referenceImages: [], textCount: 0, imageCount: 0 };
+        const context = node.metadata?.pairwiseGenerationContext
+          || (sourceNode ? buildNodeGenerationContext(sourceNode.id, nodes, connections, promptText) : { prompt: promptText, referenceImages: [], textCount: 0, imageCount: 0 });
         const hydrated = await hydrateNodeGenerationContext(context);
         void startNodeGeneration(node.id, hydrated.prompt || promptText, hydrated.referenceImages, genConfig, sourceNode?.id ?? "");
       })();

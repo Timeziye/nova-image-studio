@@ -1,5 +1,6 @@
 import type { AspectRatio, OutputSize } from "@/lib/gemini-config";
 import type { GptImageBackground, GptImageQuality, GptImageStyle, ParallelCount } from "@/lib/model-capabilities";
+import type { ReferenceImage } from "./types-media";
 
 export type Position = {
   x: number;
@@ -69,6 +70,13 @@ export type CanvasNodeMetadata = {
   lockResultNodes?: boolean;
   /** 配置节点：按上游图片顺序逐张对应生成。 */
   pairwiseGeneration?: boolean;
+  /** 对应生成结果节点：记录该节点独立使用的提示词和参考图，重试时避免重新展开整个上游文件夹。 */
+  pairwiseGenerationContext?: {
+    prompt: string;
+    referenceImages: ReferenceImage[];
+    textCount: number;
+    imageCount: number;
+  };
   /** 单节点生成任务 ID（用于轮询 + 刷新恢复） */
   generationTaskId?: string;
   /** 单节点生成开始时间戳（用于计算用时） */
