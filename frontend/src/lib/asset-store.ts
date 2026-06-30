@@ -105,6 +105,12 @@ const ASSETS_STORE = 'assets';
 const BLOBS_STORE = 'asset-blobs';
 const FOLDERS_STORE = 'asset-folders';
 const THUMB_MAX_SIDE = 512;
+export const ASSET_LIBRARY_CHANGED_EVENT = 'nova-assets-changed';
+
+
+function notifyAssetLibraryChanged(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(ASSET_LIBRARY_CHANGED_EVENT));
+}
 
 function now(): number {
   return Date.now();
@@ -280,7 +286,7 @@ async function putAssetAndBlob(asset: AssetItem, blobRecord: AssetBlobRecord | n
     const tx = db.transaction([ASSETS_STORE, BLOBS_STORE], 'readwrite');
     if (blobRecord) tx.objectStore(BLOBS_STORE).put(blobRecord);
     tx.objectStore(ASSETS_STORE).put(asset);
-    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.oncomplete = () => { db.close(); notifyAssetLibraryChanged(); resolve(); };
     tx.onerror = () => {
       const error = tx.error || new Error('素材库写入失败');
       db.close();
@@ -297,7 +303,7 @@ async function putAssets(assets: AssetItem[]): Promise<void> {
     const tx = db.transaction(ASSETS_STORE, 'readwrite');
     const store = tx.objectStore(ASSETS_STORE);
     for (const asset of assets) store.put(asset);
-    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.oncomplete = () => { db.close(); notifyAssetLibraryChanged(); resolve(); };
     tx.onerror = () => {
       const error = tx.error || new Error('素材库写入失败');
       db.close();
@@ -314,7 +320,7 @@ async function putFolders(folders: AssetFolder[]): Promise<void> {
     const tx = db.transaction(FOLDERS_STORE, 'readwrite');
     const store = tx.objectStore(FOLDERS_STORE);
     for (const folder of folders) store.put(folder);
-    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.oncomplete = () => { db.close(); notifyAssetLibraryChanged(); resolve(); };
     tx.onerror = () => {
       const error = tx.error || new Error('文件夹写入失败');
       db.close();

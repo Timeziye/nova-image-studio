@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
+  ASSET_LIBRARY_CHANGED_EVENT,
   getAssetThumbnailBlob,
   listAssetFolders,
   listImageAssets,
@@ -267,6 +268,14 @@ export function AgentAssetPickerDialog({
   const [cols, setCols] = useState<number>(COLS.mobile);
   const [containerWidth, setContainerWidth] = useState(0);
 
+  const reloadAssets = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    const [nextAssets, nextFolders] = await Promise.all([listImageAssets(), allowFolderSelection ? listAssetFolders() : Promise.resolve([])]);
+    setAssets(nextAssets);
+    setFolders(nextFolders);
+    if (showLoading) setLoading(false);
+  }, [allowFolderSelection]);
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -282,6 +291,17 @@ export function AgentAssetPickerDialog({
       });
     return () => { cancelled = true; };
   }, [allowFolderSelection, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleAssetsChanged = () => void reloadAssets(false);
+    window.addEventListener(ASSET_LIBRARY_CHANGED_EVENT, handleAssetsChanged);
+    window.addEventListener('focus', handleAssetsChanged);
+    return () => {
+      window.removeEventListener(ASSET_LIBRARY_CHANGED_EVENT, handleAssetsChanged);
+      window.removeEventListener('focus', handleAssetsChanged);
+    };
+  }, [open, reloadAssets]);
 
   useEffect(() => {
     if (!open) {
@@ -439,7 +459,10 @@ export function AgentAssetPickerDialog({
               </span>
             </span>
             {allowFolderSelection && selectionLimit > 1 && (
-              <label className="ml-auto inline-flex min-h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-xs font-normal">
+              <label
+                className="ml-auto inline-flex min-h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-xs font-normal"
+                title="开启后，选中的多张图片会合并到一个图片节点中以缩略图显示；关闭后，第一张填入当前节点，其余图片分别新建图片节点。"
+              >
                 <span className="text-foreground">合并显示</span>
                 <input
                   type="checkbox"

@@ -401,6 +401,9 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     : selectedFolderId === 'unfiled'
       ? '未归档'
       : folderById.get(selectedFolderId)?.name || '文件夹';
+  const openedFolder = selectedFolderId !== 'all' && selectedFolderId !== 'unfiled'
+    ? folderById.get(selectedFolderId) || null
+    : null;
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
     const unfiledCount = assets.filter(asset => isTextAsset(asset) || (isImageAsset(asset) && !asset.folderId)).length;
@@ -409,8 +412,8 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     for (const folder of folders) counts.set(folder.id, assets.filter(asset => isImageAsset(asset) && asset.folderId === folder.id).length);
     return counts;
   }, [assets, folders]);
-  const canReorderFolders = !debouncedQuery && !selectedTag && !selectedSource;
-  const canReorderImages = sort === 'manual' && selectedFolderId !== 'all' && !debouncedQuery && !selectedTag && !selectedSource;
+  const canReorderFolders = selectedFolderId === 'all' && !debouncedQuery && !selectedTag && !selectedSource;
+  const canReorderImages = selectedFolderId !== 'all' && !debouncedQuery && !selectedTag && !selectedSource;
 
   const filteredFolders = useMemo(() => {
     if (selectedFolderId !== 'all' || selectedTag || selectedSource) return [];
@@ -738,25 +741,28 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
 
   const handleFolderDrop = useCallback(async (targetFolderId: string) => {
     if (!canReorderFolders || !draggingFolderId || draggingFolderId === targetFolderId) return;
-    const fromIndex = folders.findIndex(folder => folder.id === draggingFolderId);
-    const toIndex = folders.findIndex(folder => folder.id === targetFolderId);
+    const visibleFolderOrder = filteredFolders.length > 0 ? filteredFolders : folders;
+    const fromIndex = visibleFolderOrder.findIndex(folder => folder.id === draggingFolderId);
+    const toIndex = visibleFolderOrder.findIndex(folder => folder.id === targetFolderId);
     if (fromIndex < 0 || toIndex < 0) return;
-    const nextFolders = [...folders];
-    const [moved] = nextFolders.splice(fromIndex, 1);
-    nextFolders.splice(toIndex, 0, moved);
-    setFolders(nextFolders);
+    const nextVisibleFolders = [...visibleFolderOrder];
+    const [moved] = nextVisibleFolders.splice(fromIndex, 1);
+    nextVisibleFolders.splice(toIndex, 0, moved);
+    setSort('manual');
+    setFolders(nextVisibleFolders);
     setDraggingFolderId(null);
     try {
-      setSort('manual');
-      await reorderAssetFolders(nextFolders.map(folder => folder.id));
+      await reorderAssetFolders(nextVisibleFolders.map(folder => folder.id));
+      await reload();
     } catch (error) {
       await reload();
       dispatchImageActionToast(error instanceof Error ? error.message : '文件夹排序失败', 'error');
     }
-  }, [canReorderFolders, draggingFolderId, folders, reload]);
+  }, [canReorderFolders, draggingFolderId, filteredFolders, folders, reload]);
 
   const handleAssetDrop = useCallback(async (targetAssetId: string) => {
     if (!draggingAssetId || draggingAssetId === targetAssetId || !canReorderImages) return;
+    setSort('manual');
     const imageAssets = visibleAssets.filter(isImageAsset);
     const fromIndex = imageAssets.findIndex(asset => asset.id === draggingAssetId);
     const toIndex = imageAssets.findIndex(asset => asset.id === targetAssetId);
@@ -766,7 +772,6 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
     nextImageAssets.splice(toIndex, 0, moved);
     setDraggingAssetId(null);
     try {
-      setSort('manual');
       await reorderImageAssets(nextImageAssets.map(asset => asset.id), selectedFolderId === 'unfiled' ? undefined : selectedFolderId);
       await reload();
     } catch (error) {
@@ -984,68 +989,33 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
               <span className="opacity-70">{folder.count}</span>
             </button>
           ))}
-          {folders.map(folder => {
-            const selected = selectedFolderId === folder.id;
-            return (
-              <div
-                key={folder.id}
-                draggable={canReorderFolders}
-                onDragStart={event => {
-                  if (!canReorderFolders) return;
-                  setDraggingFolderId(folder.id);
-                  event.dataTransfer.effectAllowed = 'move';
-                }}
-                onDragOver={event => {
-                  if (canReorderFolders && draggingFolderId && draggingFolderId !== folder.id) event.preventDefault();
-                }}
-                onDrop={event => {
-                  event.preventDefault();
-                  void handleFolderDrop(folder.id);
-                }}
-                onDragEnd={() => setDraggingFolderId(null)}
-                className={cn(
-                  'group inline-flex min-h-8 shrink-0 items-center rounded-lg border transition-colors',
-                  selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted',
-                  canReorderFolders && 'cursor-move',
-                  draggingFolderId === folder.id && 'opacity-50'
-                )}
+          {openedFolder && (
+            <div
+              className={cn(
+                'group inline-flex min-h-8 shrink-0 items-center rounded-lg border transition-colors',
+                'border-primary bg-primary text-primary-foreground'
+              )}
+            >
+              <button
+                type="button"
+                className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs"
+                onClick={() => setSelectedFolderId(openedFolder.id)}
+                title={openedFolder.name}
               >
-                <button
-                  type="button"
-                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs"
-                  onClick={() => setSelectedFolderId(folder.id)}
-                  title={folder.name}
-                >
-                  {canReorderFolders && <GripVertical className="h-3.5 w-3.5 opacity-55" />}
-                  <Folder className="h-3.5 w-3.5" />
-                  <span className="max-w-28 truncate">{folder.name}</span>
-                  <span className="opacity-70">{folderCounts.get(folder.id) || 0}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openRenameFolderDialog(folder)}
-                  className={cn(
-                    'mr-1 rounded p-1 opacity-70 transition-opacity hover:bg-background/50 hover:opacity-100',
-                    selected && 'hover:bg-primary-foreground/15'
-                  )}
-                  title="重命名文件夹"
-                >
-                  <FolderPen className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDeleteFolderTarget(folder)}
-                  className={cn(
-                    'mr-1 rounded p-1 opacity-70 transition-opacity hover:bg-background/50 hover:text-destructive hover:opacity-100',
-                    selected && 'hover:bg-primary-foreground/15'
-                  )}
-                  title="删除文件夹"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            );
-          })}
+                <Folder className="h-3.5 w-3.5" />
+                <span className="max-w-36 truncate">{openedFolder.name}</span>
+                <span className="opacity-70">{folderCounts.get(openedFolder.id) || 0}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedFolderId('all')}
+                className="mr-1 rounded p-1 opacity-80 transition-opacity hover:bg-primary-foreground/15 hover:opacity-100"
+                title="关闭文件夹页签"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <div className="relative flex-1">
@@ -1273,19 +1243,18 @@ export function AssetsWorkspace({ wideMode = false, active = true }: AssetsWorks
                   <p className="text-[11px] text-muted-foreground">{folderCounts.get(folder.id) || 0} 项</p>
                 </div>
               </button>
-              {canReorderFolders && (
-                <div
-                  draggable
-                  onDragStart={event => {
-                    setDraggingFolderId(folder.id);
-                    event.dataTransfer.effectAllowed = 'move';
-                  }}
-                  className="absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm"
-                  title="拖动排序"
-                >
-                  <GripVertical className="h-3.5 w-3.5" />
-                </div>
-              )}
+              <div
+                draggable={canReorderFolders}
+                onDragStart={event => {
+                  if (!canReorderFolders) return;
+                  setDraggingFolderId(folder.id);
+                  event.dataTransfer.effectAllowed = 'move';
+                }}
+                className="absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-black/55 text-white shadow-sm"
+                title="拖动排序"
+              >
+                <GripVertical className="h-3.5 w-3.5" />
+              </div>
               <button
                 type="button"
                 onClick={() => openRenameFolderDialog(folder)}
