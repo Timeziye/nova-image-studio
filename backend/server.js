@@ -14,6 +14,7 @@ const TASK_STATUS = {
   COMPLETED: 'completed',
   FAILED: 'failed',
 };
+const TASK_CANCELLED_ERROR = '已终止';
 const GLOBAL_TASK_CONCURRENCY = 50;
 const DEFAULT_LIMIT_CONFIG = {
   maxQueueSize: 200,
@@ -144,6 +145,7 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
 const STATIC_DIR = path.join(__dirname, '..', 'frontend', 'out');
 const IMAGE_DIR = process.env.NOVA_IMAGE_DIR || path.join(__dirname, 'nova-images');
 const taskRefImages = new Map();
+const runningTaskControllers = new Map();
 
 const app = next({ dev: IS_DEV, hostname: HOSTNAME, port: PORT, dir: path.join(__dirname, '..', 'frontend') });
 const handle = app.getRequestHandler();
@@ -244,6 +246,7 @@ function cleanupTaskRuntimeState(taskId) {
   apiKeys.delete(taskId);
   taskRefImages.delete(taskId);
   taskSources.delete(taskId);
+  runningTaskControllers.delete(taskId);
 }
 
 function getPendingCountForSource(fieldName, value) {
@@ -1046,10 +1049,9 @@ async function requestGptImage(apiKey, request, resolvedSize, options = {}) {
   const endpoint = request.mode === 'image-to-image'
     ? '/v1/images/edits'
     : '/v1/images/generations';
-  const response = await fetchWithTimeout(
-    `${baseUrl}${endpoint}`,
-    createGptImageRequestInit(apiKey, request, resolvedSize, options)
-  );
+  const init = createGptImageRequestInit(apiKey, request, resolvedSize, options);
+  if (options.signal) init.signal = options.signal;
+  const response = await fetchWithTimeout(`${baseUrl}${endpoint}`, init);
   return parseGptImageResponse(response);
 }
 
@@ -1074,26 +1076,33 @@ try {
   console.warn('[network] undici Agent 配置失败，使用默认设置:', e?.message || e);
 }
 
-async function fetchWithTimeout(url, init) {
+async function fetchWithTimeout(url, init = {}) {
   const controller = new AbortController();
+  const sourceSignal = init.signal;
+  const abortFromSource = () => controller.abort(sourceSignal?.reason);
+  if (sourceSignal?.aborted) controller.abort(sourceSignal.reason);
+  else sourceSignal?.addEventListener('abort', abortFromSource, { once: true });
+
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const { signal: _signal, ...fetchInit } = init;
+    return await fetch(url, { ...fetchInit, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
+    sourceSignal?.removeEventListener('abort', abortFromSource);
   }
 }
 
-async function generateNovaImage(apiKey, request) {
+async function generateNovaImage(apiKey, request, options = {}) {
   // 开源版：根据前端传入的 protocol 字段路由到对应的 API 协议
   const baseUrl = request.protocol === 'openai'
     ? resolveServerOpenAiBaseUrl(request.baseUrl || resolveNovaApiBaseUrl())
     : (request.baseUrl || resolveNovaApiBaseUrl());
   if (request.protocol === 'openai') {
-    return requestGptImage(apiKey, request, undefined, { baseUrl });
+    return requestGptImage(apiKey, request, undefined, { baseUrl, signal: options.signal });
   }
   // 默认走 Google Gemini 协议
-  return generateNovaGeminiImage(apiKey, request, { baseUrl });
+  return generateNovaGeminiImage(apiKey, request, { baseUrl, signal: options.signal });
 }
 
 function extractGeminiImagePayload(data) {
@@ -1111,6 +1120,7 @@ async function generateNovaGeminiImage(apiKey, request, options = {}) {
   ];
   const response = await fetchWithTimeout(`${baseUrl}/v1beta/models/${encodeURIComponent(request.model)}:generateContent`, {
     method: 'POST',
+    signal: options.signal,
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': apiKey,
@@ -1166,9 +1176,9 @@ function drainQueue() {
   }
 }
 
-async function generateSingleImage(apiKey, request, taskId, index) {
+async function generateSingleImage(apiKey, request, taskId, index, signal) {
   try {
-    const image = await generateNovaImage(apiKey, request);
+    const image = await generateNovaImage(apiKey, request, { signal });
     const expanded = image.startsWith('MULTI_URL:') ? image.substring(10).split('|||').map(url => `URL:${url}`) : [image];
     const diskRefs = [];
     for (let subIdx = 0; subIdx < expanded.length; subIdx++) {
@@ -1187,11 +1197,16 @@ async function generateSingleImage(apiKey, request, taskId, index) {
       .run(JSON.stringify(diskRefs), new Date().toISOString(), taskId, index);
     return { success: true, images: diskRefs };
   } catch (error) {
-    const message = normalizeError(error);
+    const message = signal?.aborted ? TASK_CANCELLED_ERROR : normalizeError(error);
     db.prepare("UPDATE task_items SET status = 'failed', error = ?, completed_at = ? WHERE task_id = ? AND item_index = ?")
       .run(message, new Date().toISOString(), taskId, index);
-    return { success: false, error: message };
+    return { success: false, error: message, cancelled: signal?.aborted || message === TASK_CANCELLED_ERROR };
   }
+}
+
+function isTaskMarkedCancelled(taskId) {
+  const row = db.prepare('SELECT status, error FROM tasks WHERE id = ?').get(taskId);
+  return row?.status === TASK_STATUS.FAILED && row?.error === TASK_CANCELLED_ERROR;
 }
 
 async function runTask(taskId) {
@@ -1202,57 +1217,65 @@ async function runTask(taskId) {
     return;
   }
 
-  const request = JSON.parse(task.request_json);
-  const refImages = taskRefImages.get(taskId);
-  if (refImages && refImages.length > 0) {
-    request.images = refImages;
-  }
-  db.prepare("UPDATE tasks SET status = 'processing' WHERE id = ?").run(taskId);
-  broadcastTask(taskId);
-  broadcastQueueStatus();
+  const controller = new AbortController();
+  runningTaskControllers.set(taskId, controller);
 
-  // 所有图片标记为 processing
-  for (let index = 0; index < request.parallelCount; index++) {
-    db.prepare("UPDATE task_items SET status = 'processing', created_at = ? WHERE task_id = ? AND item_index = ?")
-      .run(new Date().toISOString(), taskId, index);
-  }
-
-  // 真正并发生成所有图片
-  const itemResults = await Promise.allSettled(
-    Array.from({ length: request.parallelCount }, (_, index) =>
-      generateSingleImage(apiKey, request, taskId, index)
-    )
-  );
-
-  // 汇总结果
-  const images = [];
-  const errors = [];
-  for (const result of itemResults) {
-    if (result.status === 'fulfilled' && result.value.success) {
-      images.push(...result.value.images);
-    } else {
-      const msg = result.status === 'fulfilled'
-        ? result.value.error
-        : normalizeError(result.reason);
-      errors.push(msg);
+  try {
+    const request = JSON.parse(task.request_json);
+    const refImages = taskRefImages.get(taskId);
+    if (refImages && refImages.length > 0) {
+      request.images = refImages;
     }
-  }
+    db.prepare("UPDATE tasks SET status = 'processing' WHERE id = ?").run(taskId);
+    broadcastTask(taskId);
+    broadcastQueueStatus();
 
-  const completedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + TASK_TTL_MS).toISOString();
-  if (images.length > 0) {
-    const warning = errors.length > 0 ? `${errors.length} 张图片生成失败: ${errors.join('; ')}` : null;
-    db.prepare(`
-      UPDATE tasks SET status = 'completed', result_json = ?, warning = ?, completed_at = ?, expires_at = ? WHERE id = ?
-    `).run(JSON.stringify({ images }), warning, completedAt, expiresAt, taskId);
-  } else {
-    db.prepare(`
-      UPDATE tasks SET status = 'failed', error = ?, completed_at = ?, expires_at = ? WHERE id = ?
-    `).run(`所有图片生成失败: ${errors.join('; ')}`, completedAt, expiresAt, taskId);
+    // 所有图片标记为 processing
+    for (let index = 0; index < request.parallelCount; index++) {
+      db.prepare("UPDATE task_items SET status = 'processing', created_at = ? WHERE task_id = ? AND item_index = ?")
+        .run(new Date().toISOString(), taskId, index);
+    }
+
+    // 真正并发生成所有图片
+    const itemResults = await Promise.allSettled(
+      Array.from({ length: request.parallelCount }, (_, index) =>
+        generateSingleImage(apiKey, request, taskId, index, controller.signal)
+      )
+    );
+
+    if (controller.signal.aborted || isTaskMarkedCancelled(taskId)) return;
+
+    // 汇总结果
+    const images = [];
+    const errors = [];
+    for (const result of itemResults) {
+      if (result.status === 'fulfilled' && result.value.success) {
+        images.push(...result.value.images);
+      } else {
+        const msg = result.status === 'fulfilled'
+          ? result.value.error
+          : normalizeError(result.reason);
+        errors.push(msg);
+      }
+    }
+
+    const completedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + TASK_TTL_MS).toISOString();
+    if (images.length > 0) {
+      const warning = errors.length > 0 ? `${errors.length} 张图片生成失败: ${errors.join('; ')}` : null;
+      db.prepare(`
+        UPDATE tasks SET status = 'completed', result_json = ?, warning = ?, completed_at = ?, expires_at = ? WHERE id = ?
+      `).run(JSON.stringify({ images }), warning, completedAt, expiresAt, taskId);
+    } else {
+      db.prepare(`
+        UPDATE tasks SET status = 'failed', error = ?, completed_at = ?, expires_at = ? WHERE id = ?
+      `).run(`所有图片生成失败: ${errors.join('; ')}`, completedAt, expiresAt, taskId);
+    }
+  } finally {
+    cleanupTaskRuntimeState(taskId);
+    broadcastTask(taskId);
+    broadcastQueueStatus();
   }
-  cleanupTaskRuntimeState(taskId);
-  broadcastTask(taskId);
-  broadcastQueueStatus();
 }
 
 function serializeTask(task) {
@@ -1283,6 +1306,39 @@ function deleteTask(taskId) {
   tx();
   cleanupTaskRuntimeState(taskId);
   broadcastQueueStatus();
+}
+
+function cancelTask(taskId) {
+  const task = db.prepare('SELECT id, status FROM tasks WHERE id = ?').get(taskId);
+  if (!task) return false;
+
+  const queueIndex = queue.indexOf(taskId);
+  if (queueIndex >= 0) queue.splice(queueIndex, 1);
+
+  const controller = runningTaskControllers.get(taskId);
+  if (controller && !controller.signal.aborted) controller.abort(new Error(TASK_CANCELLED_ERROR));
+
+  const completedAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + TASK_TTL_MS).toISOString();
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE tasks
+      SET status = ?, error = ?, completed_at = ?, expires_at = ?
+      WHERE id = ? AND status NOT IN (?, ?)
+    `).run(TASK_STATUS.FAILED, TASK_CANCELLED_ERROR, completedAt, expiresAt, taskId, TASK_STATUS.COMPLETED, TASK_STATUS.FAILED);
+    db.prepare(`
+      UPDATE task_items
+      SET status = ?, error = ?, completed_at = ?
+      WHERE task_id = ? AND status NOT IN (?, ?)
+    `).run(TASK_STATUS.FAILED, TASK_CANCELLED_ERROR, completedAt, taskId, TASK_STATUS.COMPLETED, TASK_STATUS.FAILED);
+  });
+  tx();
+
+  cleanupTaskRuntimeState(taskId);
+  broadcastTask(taskId);
+  broadcastQueueStatus();
+  drainQueue();
+  return true;
 }
 
 function cleanupExpiredTasks() {
@@ -1592,7 +1648,7 @@ async function handleApi(req, res, pathname) {
       return true;
     }
 
-    const match = apiPathname.match(/^\/api\/nova\/tasks\/([^/]+)(?:\/(ack))?$/);
+    const match = apiPathname.match(/^\/api\/nova\/tasks\/([^/]+)(?:\/(ack|cancel))?$/);
     if (!match) return false;
     const taskId = decodeURIComponent(match[1]);
     const action = match[2];
@@ -1612,6 +1668,12 @@ async function handleApi(req, res, pathname) {
         );
       }
       sendJson(res, 200, { ok: true });
+      return true;
+    }
+
+    if (req.method === 'POST' && action === 'cancel') {
+      const cancelled = cancelTask(taskId);
+      sendJson(res, cancelled ? 200 : 404, cancelled ? { ok: true } : { error: 'Task not found' });
       return true;
     }
 

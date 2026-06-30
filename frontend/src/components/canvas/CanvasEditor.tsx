@@ -25,7 +25,7 @@ import { canvasTheme } from "./lib/canvas-theme";
 import { getNodeSpec } from "./constants";
 import { flushCanvasStoreSave, useCanvasStore } from "./stores/use-canvas-store";
 import { useCanvasConfigStore } from "./stores/use-canvas-config-store";
-import { CanvasApiKeyMissingError, submitNodeGeneration, pollNodeTask, checkExistingTask, type CanvasGeneratedImage } from "./canvas-generation-service";
+import { CanvasApiKeyMissingError, cancelNodeTask, submitNodeGeneration, pollNodeTask, checkExistingTask, type CanvasGeneratedImage } from "./canvas-generation-service";
 import { buildNodeGenerationContext, buildNodeGenerationInputs, buildPairwiseGenerationContexts, hydrateNodeGenerationContext } from "./components/canvas-node-generation";
 import { buildNodeMentionReferences } from "./utils/canvas-resource-references";
 import { fitNodeSize } from "./utils/canvas-node-size";
@@ -1035,10 +1035,23 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     });
   }, []);
 
+  const cancelBackendTasksForNodeIds = useCallback((nodeIds: Iterable<string>) => {
+    const nodeIdSet = new Set(nodeIds);
+    const taskIds = Array.from(new Set(
+      nodes
+        .filter((node) => nodeIdSet.has(node.id))
+        .map((node) => node.metadata?.generationTaskId)
+        .filter((taskId): taskId is string => Boolean(taskId)),
+    ));
+    if (!taskIds.length) return;
+    void Promise.all(taskIds.map((taskId) => cancelNodeTask(taskId)));
+  }, [nodes]);
+
   const cancelGenerationForConfig = useCallback((configNodeId: string) => {
     const queue = pairwiseQueuesRef.current.get(configNodeId);
     if (queue) {
       queue.cancelled = true;
+      cancelBackendTasksForNodeIds(queue.nodeIds);
       for (const nodeId of queue.nodeIds) activeGenerationsRef.current.get(nodeId)?.abort();
       const queueNodeIds = new Set(queue.nodeIds);
       setNodes((prev) => prev.map((node) => (
@@ -1056,6 +1069,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     const activeTargetIds = connections
       .filter((connection) => connection.fromNodeId === configNodeId)
       .map((connection) => connection.toNodeId);
+    cancelBackendTasksForNodeIds(activeTargetIds);
     for (const nodeId of activeTargetIds) activeGenerationsRef.current.get(nodeId)?.abort();
     const activeTargetIdSet = new Set(activeTargetIds);
     setNodes((prev) => prev.map((node) => (
@@ -1065,10 +1079,15 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     )));
     setBusy(configNodeId, false);
     showToast("已终止当前生成", "info");
-  }, [clearPairwiseQueueStats, connections, setBusy, showToast]);
+  }, [cancelBackendTasksForNodeIds, clearPairwiseQueueStats, connections, setBusy, showToast]);
 
   const cancelAllGeneration = useCallback(() => {
-    const cancelledNodeIds = new Set<string>(activeGenerationsRef.current.keys());
+    const activeNodeIds = Array.from(activeGenerationsRef.current.keys());
+    const cancellableNodeIds = nodes
+      .filter((node) => ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || ""))
+      .map((node) => node.id);
+    const cancelledNodeIds = new Set<string>([...activeNodeIds, ...cancellableNodeIds]);
+    cancelBackendTasksForNodeIds(cancelledNodeIds);
     for (const controller of activeGenerationsRef.current.values()) controller.abort();
     activeGenerationsRef.current.clear();
 
@@ -1086,7 +1105,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         : node
     )));
     showToast(cancelledNodeIds.size > 0 ? "已终止全部生成和排队任务" : "当前没有生成任务", "info");
-  }, [showToast]);
+  }, [cancelBackendTasksForNodeIds, nodes, showToast]);
 
   const cancelSelectedGeneration = useCallback((targetNodeIds: string[]) => {
     const targetSet = new Set(targetNodeIds);
@@ -1095,6 +1114,10 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     const cancelledNodeIds = new Set<string>();
     const queuedCancelledByConfig = new Map<string, number>();
     const runningCancelledByConfig = new Map<string, number>();
+    cancelBackendTasksForNodeIds(targetSet);
+    for (const node of nodes) {
+      if (targetSet.has(node.id) && (node.metadata?.generationTaskId || ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || ""))) cancelledNodeIds.add(node.id);
+    }
     for (const nodeId of targetSet) {
       const controller = activeGenerationsRef.current.get(nodeId);
       if (controller) {
@@ -1134,7 +1157,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     )));
     showToast(`已终止选中的 ${cancelledNodeIds.size} 个生成任务`, "info");
     return true;
-  }, [showToast, updatePairwiseQueueStats]);
+  }, [cancelBackendTasksForNodeIds, nodes, showToast, updatePairwiseQueueStats]);
 
   const cancelToolbarGeneration = useCallback(() => {
     const selectedGenerationNodeIds = nodes
@@ -1148,6 +1171,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
   const startNodeGeneration = useCallback(
     async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string, options?: { waitForCompletion?: boolean; throwOnSubmitError?: boolean }) => {
       // 取消该节点之前的任务（如有）
+      cancelBackendTasksForNodeIds([nodeId]);
       activeGenerationsRef.current.get(nodeId)?.abort();
       const controller = new AbortController();
       activeGenerationsRef.current.set(nodeId, controller);
@@ -1157,8 +1181,11 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
       setBusy(sourceNodeId, true);
 
       try {
-        const taskId = await submitNodeGeneration({ prompt: promptText, referenceImages, config: genConfig });
-        if (controller.signal.aborted) return;
+        const taskId = await submitNodeGeneration({ prompt: promptText, referenceImages, config: genConfig }, controller.signal);
+        if (controller.signal.aborted) {
+          void cancelNodeTask(taskId);
+          return;
+        }
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, generationTaskId: taskId, status: "queued" } } : node)));
 
         const pollPromise = (async () => {
@@ -1211,7 +1238,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         if (options?.throwOnSubmitError) throw error;
       }
     },
-    [nodes, onRequireApiKey, setBusy],
+    [cancelBackendTasksForNodeIds, nodes, onRequireApiKey, setBusy],
   );
 
   const runGeneration = useCallback(

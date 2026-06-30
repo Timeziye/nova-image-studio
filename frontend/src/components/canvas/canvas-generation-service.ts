@@ -2,10 +2,10 @@
 
 /**
  * 画布生成服务：把节点生成接入【宿主任务队列】（不改后端、不改队列）。
- * 仅使用 host 的 nova-task-client（createNovaTask / getNovaTask / ackNovaTask）。
+ * 使用 host 的 nova-task-client（createNovaTask / getNovaTask / ackNovaTask / cancelNovaTask）。
  * 视频/音频不在范围内；图生图无 mask（队列不支持）。
  */
-import { ackNovaTask, createNovaTask, getNovaTask, resolveImageTaskProvider, type NovaTaskResponse, type NovaTaskStatus, type ImageReference } from "@/lib/ccode-task-client";
+import { ackNovaTask, cancelNovaTask, createNovaTask, getNovaTask, resolveImageTaskProvider, type NovaTaskResponse, type NovaTaskStatus, type ImageReference } from "@/lib/ccode-task-client";
 import { normalizeModel } from "@/lib/model-capabilities";
 import { compressReferenceDataUrl } from "./lib/image-utils";
 import { uploadImage } from "./lib/image-storage";
@@ -51,7 +51,7 @@ export async function submitNodeGeneration(args: {
   prompt: string;
   referenceImages: ReferenceImage[];
   config: CanvasGenerationConfig;
-}): Promise<string> {
+}, signal?: AbortSignal): Promise<string> {
   const provider = resolveImageTaskProvider(resolveTaskModel(args.config));
   const apiKey = provider.apiKey;
   if (!apiKey) throw new CanvasApiKeyMissingError();
@@ -73,8 +73,12 @@ export async function submitNodeGeneration(args: {
     gptImageBackground: args.config.gptImageBackground,
     parallelCount: 1,
     images: imageRefs,
-  });
+  }, signal);
   return taskId;
+}
+
+export async function cancelNodeTask(taskId: string): Promise<void> {
+  await cancelNovaTask(taskId);
 }
 
 /** 轮询单个任务直到终态；通过 onStatus 回调实时通知调用方。 */

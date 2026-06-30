@@ -17,6 +17,7 @@ import {
   type ImageAsset,
   type TextAsset,
 } from '@/lib/asset-store';
+import { loadJsonFromStorage } from '@/lib/settings-storage';
 import { cn } from '@/lib/utils';
 
 interface AgentAssetPickerDialogProps {
@@ -37,6 +38,9 @@ interface AgentTextAssetPickerDialogProps {
 const COLS = { mobile: 2, sm: 4, md: 5, lg: 6 } as const;
 const CARD_GAP = 8; // gap-2
 const CARD_META_HEIGHT = 110; // min-h-[110px]
+const ASSET_SETTINGS_KEY = 'nova-assets-settings';
+const ASSET_SETTINGS_VERSION = 2;
+type AssetSort = 'name-asc' | 'name-desc' | 'manual' | 'newest' | 'oldest' | 'used';
 
 function matchesAsset(asset: ImageAsset, query: string): boolean {
   const q = query.trim().toLowerCase();
@@ -54,11 +58,30 @@ function compareAssetText(a: string, b: string): number {
   return a.localeCompare(b, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
 }
 
-function compareImageAssetsByFolderOrder(a: ImageAsset, b: ImageAsset): number {
-  return (a.order || a.createdAt || 0) - (b.order || b.createdAt || 0)
-    || a.createdAt - b.createdAt
-    || compareAssetText(a.name, b.name)
-    || compareAssetText(a.id, b.id);
+function loadAssetSortSetting(): AssetSort {
+  if (typeof window === 'undefined') return 'name-asc';
+  const saved = loadJsonFromStorage<{ version?: number; sort?: AssetSort }>(ASSET_SETTINGS_KEY);
+  if (saved.version !== ASSET_SETTINGS_VERSION) return 'name-asc';
+  return saved.sort === 'manual' || saved.sort === 'name-desc' || saved.sort === 'newest' || saved.sort === 'oldest' || saved.sort === 'used'
+    ? saved.sort
+    : 'name-asc';
+}
+
+function compareImageAssetsBySort(a: ImageAsset, b: ImageAsset, sort: AssetSort): number {
+  if (sort === 'manual') {
+    return (a.order || a.createdAt || 0) - (b.order || b.createdAt || 0)
+      || a.createdAt - b.createdAt
+      || compareAssetText(a.name, b.name)
+      || compareAssetText(a.id, b.id);
+  }
+  if (sort === 'name-desc') return compareAssetText(b.name, a.name) || b.createdAt - a.createdAt;
+  if (sort === 'newest') return b.createdAt - a.createdAt || compareAssetText(a.name, b.name);
+  if (sort === 'oldest') return a.createdAt - b.createdAt || compareAssetText(a.name, b.name);
+  if (sort === 'used') {
+    return (b.lastUsedAt || b.updatedAt || b.createdAt) - (a.lastUsedAt || a.updatedAt || a.createdAt)
+      || compareAssetText(a.name, b.name);
+  }
+  return compareAssetText(a.name, b.name) || a.createdAt - b.createdAt;
 }
 
 function matchesTextAsset(asset: TextAsset, query: string): boolean {
@@ -262,6 +285,7 @@ export function AgentAssetPickerDialog({
   const [query, setQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState('all');
+  const [assetSort, setAssetSort] = useState<AssetSort>(() => loadAssetSortSetting());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [mergeIntoGallery, setMergeIntoGallery] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -271,6 +295,7 @@ export function AgentAssetPickerDialog({
   const reloadAssets = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     const [nextAssets, nextFolders] = await Promise.all([listImageAssets(), allowFolderSelection ? listAssetFolders() : Promise.resolve([])]);
+    setAssetSort(loadAssetSortSetting());
     setAssets(nextAssets);
     setFolders(nextFolders);
     if (showLoading) setLoading(false);
@@ -283,6 +308,7 @@ export function AgentAssetPickerDialog({
     void Promise.all([listImageAssets(), allowFolderSelection ? listAssetFolders() : Promise.resolve([])])
       .then(([nextAssets, nextFolders]) => {
         if (cancelled) return;
+        setAssetSort(loadAssetSortSetting());
         setAssets(nextAssets);
         setFolders(nextFolders);
       })
@@ -327,8 +353,8 @@ export function AgentAssetPickerDialog({
       if (selectedFolderId !== 'all' && selectedFolderId !== 'unfiled' && asset.folderId !== selectedFolderId) return false;
       if (selectedTag && !asset.tags.includes(selectedTag)) return false;
       return matchesAsset(asset, query);
-    }).sort(compareImageAssetsByFolderOrder),
-    [assets, query, selectedFolderId, selectedTag],
+    }).sort((a, b) => compareImageAssetsBySort(a, b, assetSort)),
+    [assetSort, assets, query, selectedFolderId, selectedTag],
   );
 
   const folderCounts = useMemo(() => {
@@ -344,14 +370,14 @@ export function AgentAssetPickerDialog({
     [folders, selectedFolderId],
   );
   const selectedFolderAssets = useMemo(
-    () => selectedFolder ? assets.filter(asset => asset.folderId === selectedFolder.id).sort(compareImageAssetsByFolderOrder) : [],
-    [assets, selectedFolder],
+    () => selectedFolder ? assets.filter(asset => asset.folderId === selectedFolder.id).sort((a, b) => compareImageAssetsBySort(a, b, assetSort)) : [],
+    [assetSort, assets, selectedFolder],
   );
   const currentFolderAssets = useMemo(() => {
     if (selectedFolderId === 'all') return filteredAssets;
-    if (selectedFolderId === 'unfiled') return assets.filter(asset => !asset.folderId).sort(compareImageAssetsByFolderOrder);
+    if (selectedFolderId === 'unfiled') return assets.filter(asset => !asset.folderId).sort((a, b) => compareImageAssetsBySort(a, b, assetSort));
     return selectedFolderAssets;
-  }, [assets, filteredAssets, selectedFolderAssets, selectedFolderId]);
+  }, [assetSort, assets, filteredAssets, selectedFolderAssets, selectedFolderId]);
   const selectedCurrentFolderCount = useMemo(
     () => currentFolderAssets.filter(asset => selectedIds.has(asset.id)).length,
     [currentFolderAssets, selectedIds],

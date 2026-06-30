@@ -21,6 +21,7 @@ export function FullscreenImageViewer({ src, title, onClose, actionPayload }: Fu
   const frameRef = useRef<number | null>(null);
   const scaleRef = useRef(1);
   const posRef = useRef({ x: 0, y: 0 });
+  const scaleStateFrameRef = useRef<number | null>(null);
   const [scaleState, setScaleState] = useState(1);
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0 });
@@ -40,14 +41,20 @@ export function FullscreenImageViewer({ src, title, onClose, actionPayload }: Fu
     });
   }, [applyTransform]);
 
-  const setScale = useCallback((value: number | ((prev: number) => number)) => {
-    setScaleState(prev => {
-      const next = typeof value === 'function' ? value(prev) : value;
-      scaleRef.current = next;
-      scheduleTransform();
-      return next;
+  const syncScaleState = useCallback(() => {
+    if (scaleStateFrameRef.current !== null) return;
+    scaleStateFrameRef.current = window.requestAnimationFrame(() => {
+      scaleStateFrameRef.current = null;
+      setScaleState(scaleRef.current);
     });
-  }, [scheduleTransform]);
+  }, []);
+
+  const setScale = useCallback((value: number | ((prev: number) => number), options?: { syncLabel?: boolean }) => {
+    const next = typeof value === 'function' ? value(scaleRef.current) : value;
+    scaleRef.current = next;
+    scheduleTransform();
+    if (options?.syncLabel !== false) syncScaleState();
+  }, [scheduleTransform, syncScaleState]);
 
   const setPos = useCallback((value: { x: number; y: number }) => {
     posRef.current = value;
@@ -74,8 +81,9 @@ export function FullscreenImageViewer({ src, title, onClose, actionPayload }: Fu
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.deltaY < 0) zoomIn(); else zoomOut();
-  }, [zoomIn, zoomOut]);
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    setScale((current) => Math.min(10, Math.max(1, current * factor)), { syncLabel: true });
+  }, [setScale]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     setDragging(true);
@@ -92,6 +100,11 @@ export function FullscreenImageViewer({ src, title, onClose, actionPayload }: Fu
   }, [dragging, setPos]);
 
   const handleMouseUp = useCallback(() => setDragging(false), []);
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    if (scaleStateFrameRef.current !== null) cancelAnimationFrame(scaleStateFrameRef.current);
+  }, []);
 
   return (
     <div
@@ -154,7 +167,7 @@ export function FullscreenImageViewer({ src, title, onClose, actionPayload }: Fu
           alt={title || ""}
           draggable={false}
           className="h-full w-full origin-center object-contain will-change-transform"
-          style={{ transition: dragging ? 'none' : 'transform 120ms ease-out' }}
+          style={{ transition: 'none' }}
         />
       </div>
     </div>

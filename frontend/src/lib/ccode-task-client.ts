@@ -170,29 +170,36 @@ async function fetchWithTimeout(
   timeoutMs: number = MODEL_CHECK_TIMEOUT,
 ): Promise<Response> {
   const controller = new AbortController();
+  const sourceSignal = init.signal;
+  const abortFromSource = () => controller.abort(sourceSignal?.reason);
+  if (sourceSignal?.aborted) controller.abort(sourceSignal.reason);
+  else sourceSignal?.addEventListener('abort', abortFromSource, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const { signal: _signal, ...fetchInit } = init;
     return await fetch(input, {
-      ...init,
+      ...fetchInit,
       signal: controller.signal,
     });
   } catch (error) {
     if (isAbortError(error)) {
-      throw new Error('请求超时');
+      throw new Error(sourceSignal?.aborted ? '已终止' : '请求超时');
     }
 
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    sourceSignal?.removeEventListener('abort', abortFromSource);
   }
 }
 
-export async function createNovaTask(input: CreateNovaTaskInput): Promise<string> {
+export async function createNovaTask(input: CreateNovaTaskInput, signal?: AbortSignal): Promise<string> {
   const response = await fetchWithTimeout('/api/nova/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
+    signal,
   }, CREATE_TASK_TIMEOUT);
   const data = await parseTaskResponse<CreateTaskResponse>(response);
   if (!data?.taskId) throw new Error('创建任务失败：后端未返回任务 ID');
@@ -372,6 +379,12 @@ export async function ackNovaTask(taskId: string): Promise<void> {
   }).catch(() => undefined);
 }
 
+export async function cancelNovaTask(taskId: string): Promise<void> {
+  await fetch(`/api/nova/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: 'POST',
+  }).catch(() => undefined);
+}
+
 // ===== 向后兼容别名 =====
 /** @deprecated Use NovaTaskMode */
 export type CcodeTaskMode = NovaTaskMode;
@@ -395,3 +408,5 @@ export const getCcodeTask = getNovaTask;
 export const getCcodeQueueStatus = getNovaQueueStatus;
 /** @deprecated Use ackNovaTask */
 export const ackCcodeTask = ackNovaTask;
+/** @deprecated Use cancelNovaTask */
+export const cancelCcodeTask = cancelNovaTask;
