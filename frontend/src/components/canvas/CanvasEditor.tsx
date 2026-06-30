@@ -919,47 +919,79 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     [createImageNode, defaultConfig, promptGalleryImporting, pushHistory, showToast, viewportCenterWorld],
   );
 
+  const saveImageNodeToAssets = useCallback(
+    async (node: CanvasNodeData) => {
+      if (node.metadata?.galleryImages?.length) {
+        let savedCount = 0;
+        for (const image of node.metadata.galleryImages) {
+          const key = image.storageKey;
+          let blob: Blob | null = key ? await getImageBlob(key) : null;
+          if (!blob && image.content) blob = await (await fetch(image.content)).blob();
+          if (!blob) continue;
+          await addImageAsset({
+            blob,
+            sourceKind: "manual",
+            sourceLabel: "无限画布",
+            name: image.name,
+            prompt: image.prompt || node.metadata?.prompt,
+            folderId: node.metadata?.assetFolderId,
+          });
+          savedCount++;
+        }
+        return savedCount;
+      }
+
+      const key = node.metadata?.storageKey;
+      let blob: Blob | null = key ? await getImageBlob(key) : null;
+      if (!blob) {
+        const url = nodeImageUrl(node);
+        if (url) blob = await (await fetch(url)).blob();
+      }
+      if (!blob) return 0;
+      await addImageAsset({ blob, sourceKind: "manual", sourceLabel: "无限画布", name: node.title, prompt: node.metadata?.prompt });
+      return 1;
+    },
+    [nodeImageUrl],
+  );
+
   const handleSaveToAssets = useCallback(
     async (node: CanvasNodeData) => {
       try {
-        if (node.metadata?.galleryImages?.length) {
-          let savedCount = 0;
-          for (const image of node.metadata.galleryImages) {
-            const key = image.storageKey;
-            let blob: Blob | null = key ? await getImageBlob(key) : null;
-            if (!blob && image.content) blob = await (await fetch(image.content)).blob();
-            if (!blob) continue;
-            await addImageAsset({
-              blob,
-              sourceKind: "manual",
-              sourceLabel: "无限画布",
-              name: image.name,
-              prompt: image.prompt || node.metadata?.prompt,
-              folderId: node.metadata?.assetFolderId,
-            });
-            savedCount++;
-          }
-          showToast(savedCount ? `已存入 ${savedCount} 张素材` : "无法读取图片", savedCount ? "success" : "error");
-          return;
-        }
-        const key = node.metadata?.storageKey;
-        let blob: Blob | null = key ? await getImageBlob(key) : null;
-        if (!blob) {
-          const url = nodeImageUrl(node);
-          if (url) blob = await (await fetch(url)).blob();
-        }
-        if (!blob) {
-          showToast("无法读取图片", "error");
-          return;
-        }
-        await addImageAsset({ blob, sourceKind: "manual", sourceLabel: "无限画布", name: node.title, prompt: node.metadata?.prompt });
-        showToast("已存入我的素材", "success");
+        const savedCount = await saveImageNodeToAssets(node);
+        showToast(savedCount ? (savedCount > 1 ? `已存入 ${savedCount} 张素材` : "已存入我的素材") : "无法读取图片", savedCount ? "success" : "error");
       } catch {
         showToast("存入素材失败", "error");
       }
     },
-    [nodeImageUrl, showToast],
+    [saveImageNodeToAssets, showToast],
   );
+
+  const selectedImportableImageCount = useMemo(
+    () => nodes.filter((node) => selectedIds.includes(node.id) && node.type === CanvasNodeType.Image && (node.metadata?.galleryImages?.length || node.metadata?.storageKey || node.metadata?.content)).length,
+    [nodes, selectedIds],
+  );
+
+  const handleToolbarImportToAssets = useCallback(async () => {
+    const selectedImageNodes = nodes.filter((node) => selectedIds.includes(node.id) && node.type === CanvasNodeType.Image && (node.metadata?.galleryImages?.length || node.metadata?.storageKey || node.metadata?.content));
+    const configNodeIds = new Set(nodes.filter((node) => node.type === CanvasNodeType.Config).map((node) => node.id));
+    const generatedImageNodeIds = new Set(connections.filter((connection) => configNodeIds.has(connection.fromNodeId)).map((connection) => connection.toNodeId));
+    const targetNodes = selectedImageNodes.length > 0
+      ? selectedImageNodes
+      : nodes.filter((node) => node.type === CanvasNodeType.Image && generatedImageNodeIds.has(node.id) && !node.metadata?.galleryImages?.length && node.metadata?.status === "success" && (node.metadata?.storageKey || node.metadata?.content));
+
+    if (targetNodes.length === 0) {
+      showToast(selectedIds.length > 0 ? "选中的图片节点没有可导入图片" : "没有可导入的生成图片", "info");
+      return;
+    }
+
+    try {
+      let savedCount = 0;
+      for (const node of targetNodes) savedCount += await saveImageNodeToAssets(node);
+      showToast(savedCount ? `已导入 ${savedCount} 张图片到素材` : "无法读取图片", savedCount ? "success" : "error");
+    } catch {
+      showToast("导入素材失败", "error");
+    }
+  }, [connections, nodes, saveImageNodeToAssets, selectedIds, showToast]);
 
   // ---- generation (编排节点 → 输出图片节点；走宿主任务队列；逐节点独立并发) ----
   const setBusy = useCallback((nodeId: string, busy: boolean) => {
@@ -2169,6 +2201,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         selectedCount={selectedIds.length + selectedConnectionIds.length}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
+        selectedImportableImageCount={selectedImportableImageCount}
         hasActiveGeneration={canvasGenerationStatus.hasActiveGeneration}
         selectedGenerationCount={canvasGenerationStatus.selectedActiveNodeCount}
         saveFeedbackVisible={saveFeedbackVisible}
@@ -2178,6 +2211,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         onAddText={() => addNode(CanvasNodeType.Text)}
         onAddConfig={() => addNode(CanvasNodeType.Config)}
         onImportPromptGallery={() => setPromptGalleryOpen(true)}
+        onImportToAssets={handleToolbarImportToAssets}
         onUndo={undo}
         onRedo={redo}
         onSave={() => void saveCanvas()}

@@ -49,6 +49,17 @@ function matchesAsset(asset: ImageAsset, query: string): boolean {
   ].some(value => value.toLowerCase().includes(q));
 }
 
+function compareAssetText(a: string, b: string): number {
+  return a.localeCompare(b, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+}
+
+function compareImageAssetsByFolderOrder(a: ImageAsset, b: ImageAsset): number {
+  return (a.order || a.createdAt || 0) - (b.order || b.createdAt || 0)
+    || a.createdAt - b.createdAt
+    || compareAssetText(a.name, b.name)
+    || compareAssetText(a.id, b.id);
+}
+
 function matchesTextAsset(asset: TextAsset, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -296,7 +307,7 @@ export function AgentAssetPickerDialog({
       if (selectedFolderId !== 'all' && selectedFolderId !== 'unfiled' && asset.folderId !== selectedFolderId) return false;
       if (selectedTag && !asset.tags.includes(selectedTag)) return false;
       return matchesAsset(asset, query);
-    }),
+    }).sort(compareImageAssetsByFolderOrder),
     [assets, query, selectedFolderId, selectedTag],
   );
 
@@ -313,12 +324,12 @@ export function AgentAssetPickerDialog({
     [folders, selectedFolderId],
   );
   const selectedFolderAssets = useMemo(
-    () => selectedFolder ? assets.filter(asset => asset.folderId === selectedFolder.id) : [],
+    () => selectedFolder ? assets.filter(asset => asset.folderId === selectedFolder.id).sort(compareImageAssetsByFolderOrder) : [],
     [assets, selectedFolder],
   );
   const currentFolderAssets = useMemo(() => {
     if (selectedFolderId === 'all') return filteredAssets;
-    if (selectedFolderId === 'unfiled') return assets.filter(asset => !asset.folderId);
+    if (selectedFolderId === 'unfiled') return assets.filter(asset => !asset.folderId).sort(compareImageAssetsByFolderOrder);
     return selectedFolderAssets;
   }, [assets, filteredAssets, selectedFolderAssets, selectedFolderId]);
   const selectedCurrentFolderCount = useMemo(
@@ -329,8 +340,8 @@ export function AgentAssetPickerDialog({
   const canConfirmFolder = Boolean(allowFolderSelection && selectedFolder && selectedFolderAssets.length > 0);
 
   const selectedAssets = useMemo(
-    () => assets.filter(asset => selectedIds.has(asset.id)),
-    [assets, selectedIds],
+    () => filteredAssets.filter(asset => selectedIds.has(asset.id)),
+    [filteredAssets, selectedIds],
   );
 
   // 监听容器宽度变化以动态计算列数。列表容器在加载/空状态不会渲染，需要等结果出现后再绑定。

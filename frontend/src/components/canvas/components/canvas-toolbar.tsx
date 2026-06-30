@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleDot, Grid2x2, Image as ImageIcon, Info, LibraryBig, OctagonX, Redo2, Save, Settings2, Square, Trash2, Type, Undo2 } from "lucide-react";
+import { Archive, CircleDot, Grid2x2, Image as ImageIcon, Info, LibraryBig, OctagonX, Redo2, Save, Settings2, Square, Trash2, Type, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/toggle-group";
@@ -12,6 +12,7 @@ type CanvasToolbarProps = {
   selectedCount: number;
   canUndo: boolean;
   canRedo: boolean;
+  selectedImportableImageCount: number;
   hasActiveGeneration: boolean;
   selectedGenerationCount: number;
   saveFeedbackVisible: boolean;
@@ -21,6 +22,7 @@ type CanvasToolbarProps = {
   onAddText: () => void;
   onAddConfig: () => void;
   onImportPromptGallery: () => void;
+  onImportToAssets: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
@@ -34,6 +36,7 @@ export function CanvasToolbar({
   selectedCount,
   canUndo,
   canRedo,
+  selectedImportableImageCount,
   hasActiveGeneration,
   selectedGenerationCount,
   saveFeedbackVisible,
@@ -43,6 +46,7 @@ export function CanvasToolbar({
   onAddText,
   onAddConfig,
   onImportPromptGallery,
+  onImportToAssets,
   onUndo,
   onRedo,
   onSave,
@@ -75,6 +79,11 @@ export function CanvasToolbar({
       <CanvasTooltip label="从提示词广场导入">
         <Button variant="ghost" size="icon-sm" onClick={onImportPromptGallery} aria-label="从提示词广场导入">
           <LibraryBig className="size-4" />
+        </Button>
+      </CanvasTooltip>
+      <CanvasTooltip label={selectedImportableImageCount > 0 ? `导入选中图片到素材（${selectedImportableImageCount}）` : "导入全部生成图片到素材"}>
+        <Button variant="ghost" size="icon-sm" onClick={onImportToAssets} aria-label={selectedImportableImageCount > 0 ? `导入选中图片到素材（${selectedImportableImageCount}）` : "导入全部生成图片到素材"}>
+          <Archive className="size-4" />
         </Button>
       </CanvasTooltip>
 
