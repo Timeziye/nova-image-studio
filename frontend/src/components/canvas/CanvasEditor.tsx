@@ -1108,7 +1108,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
 
   // 对单个结果图片节点启动独立生成任务（提交 + 轮询）。
   const startNodeGeneration = useCallback(
-    async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string) => {
+    async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string, options?: { waitForCompletion?: boolean }) => {
       // 取消该节点之前的任务（如有）
       activeGenerationsRef.current.get(nodeId)?.abort();
       const controller = new AbortController();
@@ -1123,18 +1123,44 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         if (controller.signal.aborted) return;
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, generationTaskId: taskId, status: "queued" } } : node)));
 
-        const images = await pollNodeTask(taskId, (taskStatus) => {
-          if (controller.signal.aborted) return;
-          setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: taskStatus as CanvasNodeMetadata["status"] } } : node)));
-        }, controller.signal);
+        const pollPromise = (async () => {
+          try {
+            const images = await pollNodeTask(taskId, (taskStatus) => {
+              if (controller.signal.aborted) return;
+              setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: taskStatus as CanvasNodeMetadata["status"] } } : node)));
+            }, controller.signal);
 
-        if (controller.signal.aborted) return;
-        const image = images[0];
-        if (image) {
-          const size = fitNodeSize(image.width, image.height, 360, 360);
-          setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, width: size.width, height: size.height, metadata: { ...node.metadata, ...storedToMetadata(image, { prompt: promptText }), generationTaskId: node.metadata?.generationTaskId, generationStartedAt: node.metadata?.generationStartedAt } } : node)));
+            if (controller.signal.aborted) return;
+            const image = images[0];
+            if (image) {
+              const size = fitNodeSize(image.width, image.height, 360, 360);
+              setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, width: size.width, height: size.height, metadata: { ...node.metadata, ...storedToMetadata(image, { prompt: promptText }), generationTaskId: node.metadata?.generationTaskId, generationStartedAt: node.metadata?.generationStartedAt } } : node)));
+            }
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            const message = error instanceof Error ? error.message : "生成失败";
+            setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: message } } : node)));
+          } finally {
+            activeGenerationsRef.current.delete(nodeId);
+            if (!pairwiseQueuesRef.current.has(sourceNodeId)) {
+              let hasActive = false;
+              for (const key of activeGenerationsRef.current.keys()) {
+                if (key === nodeId) continue;
+                const n = nodes.find((item) => item.id === key);
+                if (n && n.metadata?.generationStartedAt) { hasActive = true; break; }
+              }
+              if (!hasActive) setBusy(sourceNodeId, false);
+            }
+          }
+        })();
+
+        if (options?.waitForCompletion === false) {
+          void pollPromise;
+          return;
         }
+        await pollPromise;
       } catch (error) {
+        activeGenerationsRef.current.delete(nodeId);
         if (controller.signal.aborted) return;
         if (error instanceof CanvasApiKeyMissingError) {
           setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "idle", generationTaskId: undefined, generationStartedAt: undefined } } : node)));
@@ -1143,16 +1169,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
           const message = error instanceof Error ? error.message : "生成失败";
           setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: message } } : node)));
         }
-      } finally {
-        activeGenerationsRef.current.delete(nodeId);
-        // 检查该编排节点是否还有其他活跃子任务
-        let hasActive = false;
-        for (const key of activeGenerationsRef.current.keys()) {
-          if (key === nodeId) continue;
-          const n = nodes.find((item) => item.id === key);
-          if (n && n.metadata?.generationStartedAt) { hasActive = true; break; }
-        }
-        if (!hasActive && !pairwiseQueuesRef.current.has(sourceNodeId)) setBusy(sourceNodeId, false);
+        if (!pairwiseQueuesRef.current.has(sourceNodeId)) setBusy(sourceNodeId, false);
       }
     },
     [nodes, onRequireApiKey, setBusy],
@@ -1226,7 +1243,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
               const hydrated = await hydrateNodeGenerationContext(next.item.context);
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
               if (!latestControl || latestControl.cancelled || latestControl.cancelledNodeIds.has(next.node.id)) return;
-              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
+              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id, { waitForCompletion: false });
             } finally {
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
               if (latestControl && !latestControl.cancelled && !latestControl.cancelledNodeIds.has(next.node.id)) {
@@ -1858,7 +1875,9 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     };
   }, [selectionBox]);
 
-  const hasActiveGeneration = busyNodeIds.length > 0 || Object.values(pairwiseQueueStats).some((status) => status.active);
+  const hasActiveGeneration = busyNodeIds.length > 0
+    || Object.values(pairwiseQueueStats).some((status) => status.active)
+    || nodes.some((node) => ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || ""));
   const selectedGenerationCount = useMemo(
     () => nodes.filter((node) => selectedIds.includes(node.id) && ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || "")).length,
     [nodes, selectedIds],
