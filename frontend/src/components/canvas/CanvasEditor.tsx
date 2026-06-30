@@ -45,7 +45,7 @@ type DialogState = { type: "crop" | "split" | "upscale" | "angle"; nodeId: strin
 
 type HistorySnapshot = { nodes: CanvasNodeData[]; connections: CanvasConnection[] };
 type PairwiseQueueStats = { running: number; queued: number; total: number; active: boolean };
-type PairwiseQueueControl = { cancelled: boolean; nodeIds: string[]; cancelledNodeIds: Set<string> };
+type PairwiseQueueControl = { cancelled: boolean; paused?: boolean; nodeIds: string[]; cancelledNodeIds: Set<string> };
 
 type CanvasEditorProps = {
   projectId: string;
@@ -64,6 +64,12 @@ const PAIRWISE_GALLERY_GROUP_GAP_X = 240;
 const PAIRWISE_GENERATION_CONCURRENCY = 10;
 const CANVAS_MENTION_TOKEN_PATTERN = /@\[[^\]]+\]/g;
 const ACTIVE_GENERATION_STATUSES = ["submitting", "queued", "processing", "loading"];
+const PAIRWISE_QUEUE_BACKOFF_ERROR_PATTERN = /较多任务|排队|请求太频繁|频繁|rate.?limit|too many|queue/i;
+const PAIRWISE_QUEUE_BACKOFF_MS = 15_000;
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function getResultGridColumns(count: number) {
   return count <= 2 ? 1 : 2;
@@ -1108,7 +1114,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
 
   // 对单个结果图片节点启动独立生成任务（提交 + 轮询）。
   const startNodeGeneration = useCallback(
-    async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string, options?: { waitForCompletion?: boolean }) => {
+    async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string, options?: { waitForCompletion?: boolean; throwOnSubmitError?: boolean }) => {
       // 取消该节点之前的任务（如有）
       activeGenerationsRef.current.get(nodeId)?.abort();
       const controller = new AbortController();
@@ -1170,6 +1176,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
           setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: message } } : node)));
         }
         if (!pairwiseQueuesRef.current.has(sourceNodeId)) setBusy(sourceNodeId, false);
+        if (options?.throwOnSubmitError) throw error;
       }
     },
     [nodes, onRequireApiKey, setBusy],
@@ -1235,6 +1242,10 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
           while (queue.length) {
             const control = pairwiseQueuesRef.current.get(sourceNode.id);
             if (!control || control.cancelled) return;
+            if (control.paused) {
+              await wait(500);
+              continue;
+            }
             const next = queue.shift();
             if (!next) return;
             if (control.cancelledNodeIds.has(next.node.id)) continue;
@@ -1242,8 +1253,27 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
             try {
               const hydrated = await hydrateNodeGenerationContext(next.item.context);
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
-              if (!latestControl || latestControl.cancelled || latestControl.cancelledNodeIds.has(next.node.id)) return;
-              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
+              if (!latestControl || latestControl.cancelled || latestControl.paused || latestControl.cancelledNodeIds.has(next.node.id)) return;
+              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id, { throwOnSubmitError: true });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              if (PAIRWISE_QUEUE_BACKOFF_ERROR_PATTERN.test(message)) {
+                const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
+                if (latestControl && !latestControl.cancelled) {
+                  latestControl.paused = true;
+                  queue.unshift(next);
+                  updatePairwiseQueueStats(sourceNode.id, (current) => ({ ...current, queued: current.queued + 1, active: true }));
+                  setNodes((prev) => prev.map((node) => (
+                    node.id === next.node.id
+                      ? { ...node, metadata: { ...node.metadata, status: "queued", errorDetails: undefined, generationTaskId: undefined, generationStartedAt: undefined } }
+                      : node
+                  )));
+                  showToast("后端队列已满或请求过快，稍后继续提交排队任务", "info");
+                  await wait(PAIRWISE_QUEUE_BACKOFF_MS);
+                  const resumedControl = pairwiseQueuesRef.current.get(sourceNode.id);
+                  if (resumedControl && !resumedControl.cancelled) resumedControl.paused = false;
+                }
+              }
             } finally {
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
               if (latestControl && !latestControl.cancelled && !latestControl.cancelledNodeIds.has(next.node.id)) {
