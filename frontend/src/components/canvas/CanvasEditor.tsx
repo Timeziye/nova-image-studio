@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ArrowLeft } from "lucide-react";
 import { nanoid } from "nanoid";
 
@@ -1501,7 +1501,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     [beginGesture, nodes, selectedIds],
   );
 
-  const handleConnectionSelect = useCallback((event: React.MouseEvent<SVGPathElement>, connectionId: string) => {
+  const handleConnectionSelect = useCallback((event: ReactMouseEvent<SVGPathElement>, connectionId: string) => {
     const additive = event.shiftKey || event.metaKey || event.ctrlKey;
     setContextMenu(null);
     setSelectedConnectionIds((prev) => {
@@ -1865,6 +1865,33 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     setOptimizeError(null);
   }, [optimizedText, optimizeNodeId, optimizeOriginalPrompt, patchNode]);
 
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedConnectionIdSet = useMemo(() => new Set(selectedConnectionIds), [selectedConnectionIds]);
+  const nodeByIdMap = useMemo(() => {
+    const map = new Map<string, CanvasNodeData>();
+    for (const node of nodes) map.set(node.id, node);
+    return map;
+  }, [nodes]);
+
+  const connectionActions = useMemo(() => {
+    const map = new Map<string, {
+      onSelect: (event: ReactMouseEvent<SVGPathElement>) => void;
+      onContextMenu: (event: ReactMouseEvent<SVGPathElement>) => void;
+    }>();
+    for (const connection of connections) {
+      map.set(connection.id, {
+        onSelect: (event) => handleConnectionSelect(event, connection.id),
+        onContextMenu: (event) => {
+          event.preventDefault();
+          setSelectedIds([]);
+          setSelectedConnectionIds([connection.id]);
+          setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId: connection.id });
+        },
+      });
+    }
+    return map;
+  }, [connections, handleConnectionSelect]);
+
   const selectionRect = useMemo(() => {
     if (!selectionBox) return null;
     return {
@@ -1875,16 +1902,8 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
     };
   }, [selectionBox]);
 
-  const hasActiveGeneration = busyNodeIds.length > 0
-    || Object.values(pairwiseQueueStats).some((status) => status.active)
-    || nodes.some((node) => ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || ""));
-  const selectedGenerationCount = useMemo(
-    () => nodes.filter((node) => selectedIds.includes(node.id) && ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || "")).length,
-    [nodes, selectedIds],
-  );
-
-  useEffect(() => {
-    const stats = Object.values(pairwiseQueueStats).reduce(
+  const canvasGenerationStatus = useMemo(() => {
+    const queueStats = Object.values(pairwiseQueueStats).reduce(
       (acc, status) => ({
         running: acc.running + status.running,
         queued: acc.queued + status.queued,
@@ -1893,8 +1912,24 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
       }),
       { running: 0, queued: 0, total: 0, active: false },
     );
-    onQueueStatsChange?.(stats);
-  }, [onQueueStatsChange, pairwiseQueueStats]);
+    let activeNodeCount = 0;
+    let selectedActiveNodeCount = 0;
+    for (const node of nodes) {
+      if (!ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || "")) continue;
+      activeNodeCount += 1;
+      if (selectedIdSet.has(node.id)) selectedActiveNodeCount += 1;
+    }
+    return {
+      queueStats,
+      activeNodeCount,
+      selectedActiveNodeCount,
+      hasActiveGeneration: busyNodeIds.length > 0 || queueStats.active || activeNodeCount > 0,
+    };
+  }, [busyNodeIds.length, nodes, pairwiseQueueStats, selectedIdSet]);
+
+  useEffect(() => {
+    onQueueStatsChange?.(canvasGenerationStatus.queueStats);
+  }, [canvasGenerationStatus.queueStats, onQueueStatsChange]);
 
   return (
     <div className="relative h-full w-full">
@@ -1945,25 +1980,23 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
       >
         <svg className="pointer-events-none absolute overflow-visible" style={{ width: 1, height: 1 }}>
           {connections.map((connection) => {
-            const from = nodeById(connection.fromNodeId);
-            const to = nodeById(connection.toNodeId);
+            const from = nodeByIdMap.get(connection.fromNodeId);
+            const to = nodeByIdMap.get(connection.toNodeId);
             if (!from || !to) return null;
-            const active = selectedConnectionIds.includes(connection.id);
+            const active = selectedConnectionIdSet.has(connection.id);
+            const actions = connectionActions.get(connection.id);
+            if (!actions) return null;
             return (
               <g key={connection.id} className="pointer-events-auto">
                 <ConnectionPath
                   connection={connection}
-                  from={from}
-                  to={to}
+                  startX={from.position.x + from.width}
+                  startY={from.position.y + from.height / 2}
+                  endX={to.position.x}
+                  endY={to.position.y + to.height / 2}
                   active={active}
-                  onSelect={(event) => handleConnectionSelect(event, connection.id)}
-                  onContextMenu={(event) => {
-                    if (!selectedConnectionIds.includes(connection.id)) {
-                      setSelectedIds([]);
-                      setSelectedConnectionIds([connection.id]);
-                    }
-                    setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId: connection.id });
-                  }}
+                  onSelect={actions.onSelect}
+                  onContextMenu={actions.onContextMenu}
                 />
               </g>
             );
@@ -1979,17 +2012,17 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
               data={node}
               imageUrl={nodeImageUrl(node)}
               galleryImageUrls={nodeGalleryImageUrls(node)}
-              isSelected={selectedIds.includes(node.id)}
+              isSelected={selectedIdSet.has(node.id)}
               isRelated={relatedIds.has(node.id)}
               isConnectionTarget={connecting?.targetId === node.id}
               referenceLimitExceeded={Boolean(referenceLimit?.exceeded)}
               zIndex={nodeZIndexMap[node.id] ?? 1}
               showImageInfo={showImageInfo}
               onPointerDownNode={handleNodePointerDown}
-              onSelectNode={(id) => { if (!selectedIds.includes(id)) setSelectedIds([id]); setSelectedConnectionIds([]); }}
+              onSelectNode={(id) => { if (!selectedIdSet.has(id)) setSelectedIds([id]); setSelectedConnectionIds([]); }}
               onContextMenu={(event, id) => {
                 event.preventDefault();
-                if (!selectedIds.includes(id)) {
+                if (!selectedIdSet.has(id)) {
                   setSelectedIds([id]);
                   setSelectedConnectionIds([]);
                 }
@@ -2105,8 +2138,8 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         selectedCount={selectedIds.length + selectedConnectionIds.length}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
-        hasActiveGeneration={hasActiveGeneration}
-        selectedGenerationCount={selectedGenerationCount}
+        hasActiveGeneration={canvasGenerationStatus.hasActiveGeneration}
+        selectedGenerationCount={canvasGenerationStatus.selectedActiveNodeCount}
         saveFeedbackVisible={saveFeedbackVisible}
         backgroundMode={backgroundMode}
         showImageInfo={showImageInfo}

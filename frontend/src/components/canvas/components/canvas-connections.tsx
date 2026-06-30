@@ -1,28 +1,30 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { memo, type MouseEvent as ReactMouseEvent } from "react";
 
 import { canvasTheme } from "../lib/canvas-theme";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "../types";
 
-export function ConnectionPath({
-  connection,
-  from,
-  to,
-  active,
-  onSelect,
-  onContextMenu,
-}: {
+type ConnectionPathProps = {
   connection: CanvasConnection;
-  from: CanvasNodeData;
-  to: CanvasNodeData;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
   active: boolean;
   onSelect: (event: ReactMouseEvent<SVGPathElement>) => void;
   onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
-}) {
+};
+
+export const ConnectionPath = memo(function ConnectionPath({
+  connection,
+  startX,
+  startY,
+  endX,
+  endY,
+  active,
+  onSelect,
+  onContextMenu,
+}: ConnectionPathProps) {
   const theme = canvasTheme;
-  const startX = from.position.x + from.width;
-  const startY = from.position.y + from.height / 2;
-  const endX = to.position.x;
-  const endY = to.position.y + to.height / 2;
   const dx = Math.abs(endX - startX);
   const curvature = Math.max(dx * 0.5, 50);
   const pathD = `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
@@ -56,7 +58,16 @@ export function ConnectionPath({
       />
     </g>
   );
-}
+}, (prev, next) => (
+  prev.connection.id === next.connection.id
+  && prev.startX === next.startX
+  && prev.startY === next.startY
+  && prev.endX === next.endX
+  && prev.endY === next.endY
+  && prev.active === next.active
+  && prev.onSelect === next.onSelect
+  && prev.onContextMenu === next.onContextMenu
+));
 
 export function ActiveConnectionPath({ node, handle, mouseWorld, target }: { node?: CanvasNodeData; handle: ConnectionHandle; mouseWorld: Position; target?: CanvasNodeData }) {
   const theme = canvasTheme;
