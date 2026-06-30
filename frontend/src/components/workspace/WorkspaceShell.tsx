@@ -32,7 +32,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Shuffle, Settings, User, Wallpaper, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import { getNovaTask } from '@/lib/ccode-task-client';
+import { getNovaTask, type NovaQueueStatus } from '@/lib/ccode-task-client';
 import { finalizeCompletedServerTask } from '@/lib/workspace-task-service';
 import { classifyTaskFailure } from '@/lib/task-failure';
 import type { RefImageData, StoredJob } from '@/lib/job-store';
@@ -58,6 +58,7 @@ export function WorkspaceShell() {
   const [generationHistoryFilter, setGenerationHistoryFilter] = useState<GenerationHistoryFilter>('all');
   const [generationClearScope, setGenerationClearScope] = useState<HistoryClearScope | null>(null);
   const [referenceDraft, setReferenceDraft] = useState<{ id: number; refImages: RefImageData[] } | null>(null);
+  const [canvasQueueStats, setCanvasQueueStats] = useState({ running: 0, queued: 0, total: 0, active: false });
   const workspace = useWorkspaceJobs();
   const galleryConfig = usePromptGalleryConfig();
   const promptGallery = usePromptGalleryAccess(galleryConfig.mode, galleryConfig.passwordEnabled, setError, () => setActiveTab('prompt-gallery'));
@@ -95,6 +96,25 @@ export function WorkspaceShell() {
       return next;
     });
   }, []);
+
+  const displayQueueStatus = useMemo<NovaQueueStatus | null>(() => {
+    if (!queueStatus) return null;
+    if (!canvasQueueStats.queued) return queueStatus;
+    const queuedCount = (queueStatus.queuedCount ?? 0) + canvasQueueStats.queued;
+    const pendingCount = typeof queueStatus.pendingCount === 'number'
+      ? queueStatus.pendingCount + canvasQueueStats.queued
+      : undefined;
+    const remainingQueueSlots = typeof queueStatus.remainingQueueSlots === 'number'
+      ? Math.max(0, queueStatus.remainingQueueSlots - canvasQueueStats.queued)
+      : undefined;
+    return {
+      ...queueStatus,
+      queuedCount,
+      pendingCount,
+      remainingQueueSlots,
+      displayQueued: queuedCount,
+    };
+  }, [canvasQueueStats.queued, queueStatus]);
 
   useEffect(() => subscribeImageActionToasts(detail => showToast(detail.message, detail.type)), [showToast]);
 
@@ -253,7 +273,7 @@ export function WorkspaceShell() {
         )}>
           <WorkspaceHeader
             ref={headerRef}
-            queueStatus={queueStatus}
+            queueStatus={displayQueueStatus}
             wideMode={wideMode}
             onToggleWideMode={toggleWideMode}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -359,25 +379,25 @@ export function WorkspaceShell() {
 
                   <div className="flex flex-col gap-1">
                     <div className="h-px bg-border" />
-                    {queueStatus ? (
+                    {displayQueueStatus ? (
                       <div className="flex flex-col gap-1">
                         <span className="rounded-full bg-muted px-3 py-1 text-center text-xs text-muted-foreground">
-                          并发 {queueStatus.processingCount}
+                          并发 {displayQueueStatus.processingCount}
                         </span>
                         <span className={cn(
                           'rounded-full px-3 py-1 text-center text-xs',
-                          typeof queueStatus.queuedCount === 'number' && typeof queueStatus.maxQueueSize === 'number' && queueStatus.queuedCount >= queueStatus.maxQueueSize
+                          typeof displayQueueStatus.queuedCount === 'number' && typeof displayQueueStatus.maxQueueSize === 'number' && displayQueueStatus.queuedCount >= displayQueueStatus.maxQueueSize
                             ? 'bg-destructive/10 text-destructive'
                             : 'bg-muted text-muted-foreground'
                         )}>
-                          排队 {queueStatus.queuedCount}{typeof queueStatus.maxQueueSize === 'number' ? ` (最大${queueStatus.maxQueueSize})` : ''}
+                          排队 {displayQueueStatus.queuedCount}{typeof displayQueueStatus.maxQueueSize === 'number' ? ` (最大${displayQueueStatus.maxQueueSize})` : ''}
                         </span>
                         <span className="rounded-full bg-muted px-3 py-1 text-center text-xs text-muted-foreground">
-                          状态 {queueStatus.acceptingNewTasks ? '开启' : '关闭'}
+                          状态 {displayQueueStatus.acceptingNewTasks ? '开启' : '关闭'}
                         </span>
-                        {queueStatus.serverMessage && (
+                        {displayQueueStatus.serverMessage && (
                           <span className="rounded-xl bg-destructive/10 px-3 py-1 text-center text-xs text-destructive">
-                            {queueStatus.serverMessage}
+                            {displayQueueStatus.serverMessage}
                           </span>
                         )}
                       </div>
@@ -416,13 +436,13 @@ export function WorkspaceShell() {
                   <Button variant="outline" size="icon" className="size-10 rounded-xl" onClick={() => setSettingsOpen(true)} title="设置" aria-label="设置">
                     <Settings className="size-4" />
                   </Button>
-                  {queueStatus && (
+                  {displayQueueStatus && (
                     <span
                       className={cn(
                         "mt-1 size-2 rounded-full",
-                        queueStatus.acceptingNewTasks ? "bg-emerald-500" : "bg-destructive",
+                        displayQueueStatus.acceptingNewTasks ? "bg-emerald-500" : "bg-destructive",
                       )}
-                      title={`并发 ${queueStatus.processingCount}，排队 ${queueStatus.queuedCount ?? 0}`}
+                      title={`并发 ${displayQueueStatus.processingCount}，排队 ${displayQueueStatus.queuedCount ?? 0}`}
                     />
                   )}
                 </div>
@@ -493,6 +513,7 @@ export function WorkspaceShell() {
                   wideMode={wideMode}
                   onConfigureApiKey={() => setSettingsOpen(true)}
                   onEnableWideMode={() => { if (!wideMode) toggleWideMode(); }}
+                  onQueueStatsChange={setCanvasQueueStats}
                   showToast={showToast}
                 />
               </TabsContent>

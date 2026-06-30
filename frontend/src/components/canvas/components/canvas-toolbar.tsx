@@ -13,6 +13,7 @@ type CanvasToolbarProps = {
   canUndo: boolean;
   canRedo: boolean;
   hasActiveGeneration: boolean;
+  selectedGenerationCount: number;
   saveFeedbackVisible: boolean;
   backgroundMode: CanvasBackgroundMode;
   showImageInfo: boolean;
@@ -23,7 +24,7 @@ type CanvasToolbarProps = {
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
-  onCancelAllGeneration: () => void;
+  onCancelGeneration: () => void;
   onDelete: () => void;
   onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
   onShowImageInfoChange: (value: boolean) => void;
@@ -34,6 +35,7 @@ export function CanvasToolbar({
   canUndo,
   canRedo,
   hasActiveGeneration,
+  selectedGenerationCount,
   saveFeedbackVisible,
   backgroundMode,
   showImageInfo,
@@ -44,7 +46,7 @@ export function CanvasToolbar({
   onUndo,
   onRedo,
   onSave,
-  onCancelAllGeneration,
+  onCancelGeneration,
   onDelete,
   onBackgroundModeChange,
   onShowImageInfoChange,
@@ -93,8 +95,13 @@ export function CanvasToolbar({
 
       {hasActiveGeneration && (
         <>
-          <CanvasTooltip label="终止全部生成和排队任务">
-            <Button variant="destructive" size="icon-sm" onClick={onCancelAllGeneration} aria-label="终止全部生成和排队任务">
+          <CanvasTooltip label={selectedGenerationCount > 0 ? `终止选中的 ${selectedGenerationCount} 个生成任务` : "终止全部生成和排队任务"}>
+            <Button
+              variant="destructive"
+              size="icon-sm"
+              onClick={onCancelGeneration}
+              aria-label={selectedGenerationCount > 0 ? `终止选中的 ${selectedGenerationCount} 个生成任务` : "终止全部生成和排队任务"}
+            >
               <OctagonX className="size-4" />
             </Button>
           </CanvasTooltip>

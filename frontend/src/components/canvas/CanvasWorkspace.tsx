@@ -18,6 +18,7 @@ type CanvasWorkspaceProps = {
   wideMode?: boolean;
   onConfigureApiKey: () => void;
   onEnableWideMode: () => void;
+  onQueueStatsChange?: (stats: { running: number; queued: number; total: number; active: boolean }) => void;
   showToast: (message: string, type: "success" | "error" | "info") => void;
 };
 
@@ -29,7 +30,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "name", label: "名称" },
 ];
 
-export function CanvasWorkspace({ wideMode, onConfigureApiKey, onEnableWideMode, showToast }: CanvasWorkspaceProps) {
+export function CanvasWorkspace({ wideMode, onConfigureApiKey, onEnableWideMode, onQueueStatsChange, showToast }: CanvasWorkspaceProps) {
   const hydrated = useCanvasStore((state) => state.hydrated);
   const projects = useCanvasStore((state) => state.projects);
   const createProject = useCanvasStore((state) => state.createProject);
@@ -49,6 +50,10 @@ export function CanvasWorkspace({ wideMode, onConfigureApiKey, onEnableWideMode,
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
   }, []);
+
+  useEffect(() => {
+    if (!activeProjectId) onQueueStatsChange?.({ running: 0, queued: 0, total: 0, active: false });
+  }, [activeProjectId, onQueueStatsChange]);
 
   const sortedProjects = useMemo(() => {
     const list = [...projects];
@@ -78,7 +83,7 @@ export function CanvasWorkspace({ wideMode, onConfigureApiKey, onEnableWideMode,
   if (activeProjectId) {
     return (
       <div className="relative h-full min-h-[70vh] w-full overflow-hidden rounded-2xl border border-border bg-card">
-        <CanvasEditor projectId={activeProjectId} onBack={() => setActiveProjectId(null)} onRequireApiKey={onConfigureApiKey} showToast={showToast} />
+        <CanvasEditor projectId={activeProjectId} onBack={() => setActiveProjectId(null)} onRequireApiKey={onConfigureApiKey} onQueueStatsChange={onQueueStatsChange} showToast={showToast} />
       </div>
     );
   }

@@ -45,12 +45,13 @@ type DialogState = { type: "crop" | "split" | "upscale" | "angle"; nodeId: strin
 
 type HistorySnapshot = { nodes: CanvasNodeData[]; connections: CanvasConnection[] };
 type PairwiseQueueStats = { running: number; queued: number; total: number; active: boolean };
-type PairwiseQueueControl = { cancelled: boolean; nodeIds: string[] };
+type PairwiseQueueControl = { cancelled: boolean; nodeIds: string[]; cancelledNodeIds: Set<string> };
 
 type CanvasEditorProps = {
   projectId: string;
   onBack: () => void;
   onRequireApiKey: () => void;
+  onQueueStatsChange?: (stats: { running: number; queued: number; total: number; active: boolean }) => void;
   showToast: (message: string, type: "success" | "error" | "info") => void;
 };
 
@@ -211,7 +212,7 @@ async function optimizeImportedPromptContent(prompt: PromptWithKey, referenceIma
   return failed || !content ? { content: original, optimized: false } : { content, optimized: true };
 }
 
-export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: CanvasEditorProps) {
+export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsChange, showToast }: CanvasEditorProps) {
   const theme = canvasTheme;
   const openProject = useCanvasStore((state) => state.openProject);
   const updateProject = useCanvasStore((state) => state.updateProject);
@@ -1029,13 +1030,13 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   }, [clearPairwiseQueueStats, connections, setBusy, showToast]);
 
   const cancelAllGeneration = useCallback(() => {
-    let cancelledCount = activeGenerationsRef.current.size;
+    const cancelledNodeIds = new Set<string>(activeGenerationsRef.current.keys());
     for (const controller of activeGenerationsRef.current.values()) controller.abort();
     activeGenerationsRef.current.clear();
 
     for (const queue of pairwiseQueuesRef.current.values()) {
       queue.cancelled = true;
-      cancelledCount += queue.nodeIds.length;
+      for (const nodeId of queue.nodeIds) cancelledNodeIds.add(nodeId);
     }
     pairwiseQueuesRef.current.clear();
     setPairwiseQueueStats({});
@@ -1046,8 +1047,64 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "已终止", generationTaskId: undefined, generationStartedAt: undefined } }
         : node
     )));
-    showToast(cancelledCount > 0 ? "已终止全部生成和排队任务" : "当前没有生成任务", "info");
+    showToast(cancelledNodeIds.size > 0 ? "已终止全部生成和排队任务" : "当前没有生成任务", "info");
   }, [showToast]);
+
+  const cancelSelectedGeneration = useCallback((targetNodeIds: string[]) => {
+    const targetSet = new Set(targetNodeIds);
+    if (!targetSet.size) return false;
+
+    const cancelledNodeIds = new Set<string>();
+    const queuedCancelledByConfig = new Map<string, number>();
+    const runningCancelledByConfig = new Map<string, number>();
+    for (const nodeId of targetSet) {
+      const controller = activeGenerationsRef.current.get(nodeId);
+      if (controller) {
+        controller.abort();
+        cancelledNodeIds.add(nodeId);
+      }
+    }
+
+    for (const [configNodeId, queue] of pairwiseQueuesRef.current.entries()) {
+      for (const nodeId of queue.nodeIds) {
+        if (!targetSet.has(nodeId) || queue.cancelledNodeIds.has(nodeId)) continue;
+        queue.cancelledNodeIds.add(nodeId);
+        if (!activeGenerationsRef.current.has(nodeId)) {
+          queuedCancelledByConfig.set(configNodeId, (queuedCancelledByConfig.get(configNodeId) || 0) + 1);
+        } else {
+          runningCancelledByConfig.set(configNodeId, (runningCancelledByConfig.get(configNodeId) || 0) + 1);
+        }
+        cancelledNodeIds.add(nodeId);
+      }
+    }
+
+    for (const configNodeId of new Set([...queuedCancelledByConfig.keys(), ...runningCancelledByConfig.keys()])) {
+      const queuedCount = queuedCancelledByConfig.get(configNodeId) || 0;
+      const runningCount = runningCancelledByConfig.get(configNodeId) || 0;
+      updatePairwiseQueueStats(configNodeId, (current) => ({
+        ...current,
+        running: Math.max(0, current.running - runningCount),
+        queued: Math.max(0, current.queued - queuedCount),
+      }));
+    }
+
+    if (cancelledNodeIds.size <= 0) return false;
+    setNodes((prev) => prev.map((node) => (
+      targetSet.has(node.id) && ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || "")
+        ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "已终止", generationTaskId: undefined, generationStartedAt: undefined } }
+        : node
+    )));
+    showToast(`已终止选中的 ${cancelledNodeIds.size} 个生成任务`, "info");
+    return true;
+  }, [showToast, updatePairwiseQueueStats]);
+
+  const cancelToolbarGeneration = useCallback(() => {
+    const selectedGenerationNodeIds = nodes
+      .filter((node) => selectedIds.includes(node.id) && ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || ""))
+      .map((node) => node.id);
+    if (selectedGenerationNodeIds.length && cancelSelectedGeneration(selectedGenerationNodeIds)) return;
+    cancelAllGeneration();
+  }, [cancelAllGeneration, cancelSelectedGeneration, nodes, selectedIds]);
 
   // 对单个结果图片节点启动独立生成任务（提交 + 轮询）。
   const startNodeGeneration = useCallback(
@@ -1153,7 +1210,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         setSelectedConnectionIds([]);
 
         showToast(`已创建 ${planned.length} 个对应生成任务，最多同时提交 ${PAIRWISE_GENERATION_CONCURRENCY} 个`, "info");
-        pairwiseQueuesRef.current.set(sourceNode.id, { cancelled: false, nodeIds: planned.map(({ node }) => node.id) });
+        pairwiseQueuesRef.current.set(sourceNode.id, { cancelled: false, nodeIds: planned.map(({ node }) => node.id), cancelledNodeIds: new Set() });
         updatePairwiseQueueStats(sourceNode.id, { running: 0, queued: planned.length, total: planned.length, active: true });
         setBusy(sourceNode.id, true);
         const queue = [...planned];
@@ -1163,14 +1220,18 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
             if (!control || control.cancelled) return;
             const next = queue.shift();
             if (!next) return;
+            if (control.cancelledNodeIds.has(next.node.id)) continue;
             updatePairwiseQueueStats(sourceNode.id, (current) => ({ ...current, running: current.running + 1, queued: Math.max(0, current.queued - 1), active: true }));
             try {
               const hydrated = await hydrateNodeGenerationContext(next.item.context);
               const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
-              if (!latestControl || latestControl.cancelled) return;
+              if (!latestControl || latestControl.cancelled || latestControl.cancelledNodeIds.has(next.node.id)) return;
               await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
             } finally {
-              updatePairwiseQueueStats(sourceNode.id, (current) => ({ ...current, running: Math.max(0, current.running - 1), active: true }));
+              const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
+              if (latestControl && !latestControl.cancelled && !latestControl.cancelledNodeIds.has(next.node.id)) {
+                updatePairwiseQueueStats(sourceNode.id, (current) => ({ ...current, running: Math.max(0, current.running - 1), active: true }));
+              }
             }
           }
         });
@@ -1798,6 +1859,23 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   }, [selectionBox]);
 
   const hasActiveGeneration = busyNodeIds.length > 0 || Object.values(pairwiseQueueStats).some((status) => status.active);
+  const selectedGenerationCount = useMemo(
+    () => nodes.filter((node) => selectedIds.includes(node.id) && ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || "")).length,
+    [nodes, selectedIds],
+  );
+
+  useEffect(() => {
+    const stats = Object.values(pairwiseQueueStats).reduce(
+      (acc, status) => ({
+        running: acc.running + status.running,
+        queued: acc.queued + status.queued,
+        total: acc.total + status.total,
+        active: acc.active || status.active,
+      }),
+      { running: 0, queued: 0, total: 0, active: false },
+    );
+    onQueueStatsChange?.(stats);
+  }, [onQueueStatsChange, pairwiseQueueStats]);
 
   return (
     <div className="relative h-full w-full">
@@ -1851,7 +1929,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
             const from = nodeById(connection.fromNodeId);
             const to = nodeById(connection.toNodeId);
             if (!from || !to) return null;
-            const active = selectedConnectionIds.includes(connection.id) || selectedIds.includes(connection.fromNodeId) || selectedIds.includes(connection.toNodeId);
+            const active = selectedConnectionIds.includes(connection.id);
             return (
               <g key={connection.id} className="pointer-events-auto">
                 <ConnectionPath
@@ -2009,6 +2087,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
         hasActiveGeneration={hasActiveGeneration}
+        selectedGenerationCount={selectedGenerationCount}
         saveFeedbackVisible={saveFeedbackVisible}
         backgroundMode={backgroundMode}
         showImageInfo={showImageInfo}
@@ -2019,7 +2098,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         onUndo={undo}
         onRedo={redo}
         onSave={() => void saveCanvas()}
-        onCancelAllGeneration={cancelAllGeneration}
+        onCancelGeneration={cancelToolbarGeneration}
         onDelete={deleteSelection}
         onBackgroundModeChange={setBackgroundMode}
         onShowImageInfoChange={setShowImageInfo}
