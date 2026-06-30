@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleDot, Grid2x2, Image as ImageIcon, Info, LibraryBig, Redo2, Save, Settings2, Square, Trash2, Type, Undo2 } from "lucide-react";
+import { CircleDot, Grid2x2, Image as ImageIcon, Info, LibraryBig, OctagonX, Redo2, Save, Settings2, Square, Trash2, Type, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/toggle-group";
@@ -12,6 +12,7 @@ type CanvasToolbarProps = {
   selectedCount: number;
   canUndo: boolean;
   canRedo: boolean;
+  hasActiveGeneration: boolean;
   saveFeedbackVisible: boolean;
   backgroundMode: CanvasBackgroundMode;
   showImageInfo: boolean;
@@ -22,6 +23,7 @@ type CanvasToolbarProps = {
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
+  onCancelAllGeneration: () => void;
   onDelete: () => void;
   onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
   onShowImageInfoChange: (value: boolean) => void;
@@ -31,6 +33,7 @@ export function CanvasToolbar({
   selectedCount,
   canUndo,
   canRedo,
+  hasActiveGeneration,
   saveFeedbackVisible,
   backgroundMode,
   showImageInfo,
@@ -41,6 +44,7 @@ export function CanvasToolbar({
   onUndo,
   onRedo,
   onSave,
+  onCancelAllGeneration,
   onDelete,
   onBackgroundModeChange,
   onShowImageInfoChange,
@@ -86,6 +90,17 @@ export function CanvasToolbar({
       </CanvasTooltip>
 
       <div className="mx-1 h-5 w-px bg-border" />
+
+      {hasActiveGeneration && (
+        <>
+          <CanvasTooltip label="终止全部生成和排队任务">
+            <Button variant="destructive" size="icon-sm" onClick={onCancelAllGeneration} aria-label="终止全部生成和排队任务">
+              <OctagonX className="size-4" />
+            </Button>
+          </CanvasTooltip>
+          <div className="mx-1 h-5 w-px bg-border" />
+        </>
+      )}
 
       <div className="relative">
         <CanvasTooltip label="保存画布">

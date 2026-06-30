@@ -62,6 +62,7 @@ const PAIRWISE_GALLERY_ROWS_PER_COLUMN = 15;
 const PAIRWISE_GALLERY_GROUP_GAP_X = 240;
 const PAIRWISE_GENERATION_CONCURRENCY = 4;
 const CANVAS_MENTION_TOKEN_PATTERN = /@\[[^\]]+\]/g;
+const ACTIVE_GENERATION_STATUSES = ["submitting", "queued", "processing", "loading"];
 
 function getResultGridColumns(count: number) {
   return count <= 2 ? 1 : 2;
@@ -1027,6 +1028,27 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
     showToast("已终止当前生成", "info");
   }, [clearPairwiseQueueStats, connections, setBusy, showToast]);
 
+  const cancelAllGeneration = useCallback(() => {
+    let cancelledCount = activeGenerationsRef.current.size;
+    for (const controller of activeGenerationsRef.current.values()) controller.abort();
+    activeGenerationsRef.current.clear();
+
+    for (const queue of pairwiseQueuesRef.current.values()) {
+      queue.cancelled = true;
+      cancelledCount += queue.nodeIds.length;
+    }
+    pairwiseQueuesRef.current.clear();
+    setPairwiseQueueStats({});
+    setBusyNodeIds([]);
+
+    setNodes((prev) => prev.map((node) => (
+      ACTIVE_GENERATION_STATUSES.includes(node.metadata?.status || "")
+        ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "已终止", generationTaskId: undefined, generationStartedAt: undefined } }
+        : node
+    )));
+    showToast(cancelledCount > 0 ? "已终止全部生成和排队任务" : "当前没有生成任务", "info");
+  }, [showToast]);
+
   // 对单个结果图片节点启动独立生成任务（提交 + 轮询）。
   const startNodeGeneration = useCallback(
     async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string) => {
@@ -1775,6 +1797,8 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
     };
   }, [selectionBox]);
 
+  const hasActiveGeneration = busyNodeIds.length > 0 || Object.values(pairwiseQueueStats).some((status) => status.active);
+
   return (
     <div className="relative h-full w-full">
       <input
@@ -1984,6 +2008,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         selectedCount={selectedIds.length + selectedConnectionIds.length}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
+        hasActiveGeneration={hasActiveGeneration}
         saveFeedbackVisible={saveFeedbackVisible}
         backgroundMode={backgroundMode}
         showImageInfo={showImageInfo}
@@ -1994,6 +2019,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         onUndo={undo}
         onRedo={redo}
         onSave={() => void saveCanvas()}
+        onCancelAllGeneration={cancelAllGeneration}
         onDelete={deleteSelection}
         onBackgroundModeChange={setBackgroundMode}
         onShowImageInfoChange={setShowImageInfo}
