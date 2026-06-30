@@ -44,6 +44,8 @@ import type { PromptWithKey } from "@/lib/prompt-gallery-data";
 type DialogState = { type: "crop" | "split" | "upscale" | "angle"; nodeId: string; source: string } | null;
 
 type HistorySnapshot = { nodes: CanvasNodeData[]; connections: CanvasConnection[] };
+type PairwiseQueueStats = { running: number; queued: number; total: number; active: boolean };
+type PairwiseQueueControl = { cancelled: boolean; nodeIds: string[] };
 
 type CanvasEditorProps = {
   projectId: string;
@@ -262,10 +264,12 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
   const gestureActive = useRef(false);
   const clipboard = useRef<CanvasNodeData[]>([]);
   const activeGenerationsRef = useRef<Map<string, AbortController>>(new Map());
+  const pairwiseQueuesRef = useRef<Map<string, PairwiseQueueControl>>(new Map());
   const retryCooldownRef = useRef<Map<string, number>>(new Map());
   const saveFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [undoStack, setUndoStack] = useState<HistorySnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<HistorySnapshot[]>([]);
+  const [pairwiseQueueStats, setPairwiseQueueStats] = useState<Record<string, PairwiseQueueStats>>({});
 
   // 提示词优化（结合连接的上游图片/文字引用）
   const [optimizeOpen, setOptimizeOpen] = useState(false);
@@ -974,6 +978,55 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
     [connections, nodes],
   );
 
+  const updatePairwiseQueueStats = useCallback((nodeId: string, patch: Partial<PairwiseQueueStats> | ((current: PairwiseQueueStats) => PairwiseQueueStats)) => {
+    setPairwiseQueueStats((prev) => {
+      const current = prev[nodeId] || { running: 0, queued: 0, total: 0, active: false };
+      const next = typeof patch === "function" ? patch(current) : { ...current, ...patch };
+      return { ...prev, [nodeId]: next };
+    });
+  }, []);
+
+  const clearPairwiseQueueStats = useCallback((nodeId: string) => {
+    setPairwiseQueueStats((prev) => {
+      if (!prev[nodeId]) return prev;
+      const next = { ...prev };
+      delete next[nodeId];
+      return next;
+    });
+  }, []);
+
+  const cancelGenerationForConfig = useCallback((configNodeId: string) => {
+    const queue = pairwiseQueuesRef.current.get(configNodeId);
+    if (queue) {
+      queue.cancelled = true;
+      for (const nodeId of queue.nodeIds) activeGenerationsRef.current.get(nodeId)?.abort();
+      const queueNodeIds = new Set(queue.nodeIds);
+      setNodes((prev) => prev.map((node) => (
+        queueNodeIds.has(node.id) && ["submitting", "queued", "processing", "loading"].includes(node.metadata?.status || "")
+          ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "已终止", generationTaskId: undefined, generationStartedAt: undefined } }
+          : node
+      )));
+      pairwiseQueuesRef.current.delete(configNodeId);
+      clearPairwiseQueueStats(configNodeId);
+      setBusy(configNodeId, false);
+      showToast("已终止当前生成和排队任务", "info");
+      return;
+    }
+
+    const activeTargetIds = connections
+      .filter((connection) => connection.fromNodeId === configNodeId)
+      .map((connection) => connection.toNodeId);
+    for (const nodeId of activeTargetIds) activeGenerationsRef.current.get(nodeId)?.abort();
+    const activeTargetIdSet = new Set(activeTargetIds);
+    setNodes((prev) => prev.map((node) => (
+      activeTargetIdSet.has(node.id) && ["submitting", "queued", "processing", "loading"].includes(node.metadata?.status || "")
+        ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "已终止", generationTaskId: undefined, generationStartedAt: undefined } }
+        : node
+    )));
+    setBusy(configNodeId, false);
+    showToast("已终止当前生成", "info");
+  }, [clearPairwiseQueueStats, connections, setBusy, showToast]);
+
   // 对单个结果图片节点启动独立生成任务（提交 + 轮询）。
   const startNodeGeneration = useCallback(
     async (nodeId: string, promptText: string, referenceImages: ReferenceImage[], genConfig: CanvasGenerationConfig, sourceNodeId: string) => {
@@ -1020,7 +1073,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
           const n = nodes.find((item) => item.id === key);
           if (n && n.metadata?.generationStartedAt) { hasActive = true; break; }
         }
-        if (!hasActive) setBusy(sourceNodeId, false);
+        if (!hasActive && !pairwiseQueuesRef.current.has(sourceNodeId)) setBusy(sourceNodeId, false);
       }
     },
     [nodes, onRequireApiKey, setBusy],
@@ -1074,20 +1127,38 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         pushHistory();
         setNodes((prev) => [...prev, ...planned.map(({ node }) => node)]);
         setConnections((prev) => [...prev, ...newConnections]);
-        setSelectedIds(planned.map(({ node }) => node.id));
+        setSelectedIds([sourceNode.id]);
         setSelectedConnectionIds([]);
 
         showToast(`已创建 ${planned.length} 个对应生成任务，最多同时提交 ${PAIRWISE_GENERATION_CONCURRENCY} 个`, "info");
+        pairwiseQueuesRef.current.set(sourceNode.id, { cancelled: false, nodeIds: planned.map(({ node }) => node.id) });
+        updatePairwiseQueueStats(sourceNode.id, { running: 0, queued: planned.length, total: planned.length, active: true });
+        setBusy(sourceNode.id, true);
         const queue = [...planned];
         const workers = Array.from({ length: Math.min(PAIRWISE_GENERATION_CONCURRENCY, queue.length) }, async () => {
           while (queue.length) {
+            const control = pairwiseQueuesRef.current.get(sourceNode.id);
+            if (!control || control.cancelled) return;
             const next = queue.shift();
             if (!next) return;
-            const hydrated = await hydrateNodeGenerationContext(next.item.context);
-            await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
+            updatePairwiseQueueStats(sourceNode.id, (current) => ({ ...current, running: current.running + 1, queued: Math.max(0, current.queued - 1), active: true }));
+            try {
+              const hydrated = await hydrateNodeGenerationContext(next.item.context);
+              const latestControl = pairwiseQueuesRef.current.get(sourceNode.id);
+              if (!latestControl || latestControl.cancelled) return;
+              await startNodeGeneration(next.node.id, hydrated.prompt || promptText, hydrated.referenceImages, pairwiseConfig, sourceNode.id);
+            } finally {
+              updatePairwiseQueueStats(sourceNode.id, (current) => ({ ...current, running: Math.max(0, current.running - 1), active: true }));
+            }
           }
         });
-        void Promise.all(workers);
+        void Promise.all(workers).finally(() => {
+          const control = pairwiseQueuesRef.current.get(sourceNode.id);
+          if (!control || control.cancelled) return;
+          pairwiseQueuesRef.current.delete(sourceNode.id);
+          clearPairwiseQueueStats(sourceNode.id);
+          setBusy(sourceNode.id, false);
+        });
         return;
       }
 
@@ -1143,7 +1214,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
         void startNodeGeneration(nodeId, hydrated.prompt || promptText, hydrated.referenceImages, genConfig, sourceNode.id);
       }
     },
-    [connections, createImageNode, defaultConfig, nodes, pushHistory, startNodeGeneration, showToast],
+    [clearPairwiseQueueStats, connections, createImageNode, defaultConfig, nodes, pushHistory, startNodeGeneration, showToast, updatePairwiseQueueStats, setBusy],
   );
 
   // 单节点重试（带冷却）
@@ -1846,12 +1917,14 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, showToast }: 
                     pairwiseAvailable={pairwiseInfo.available}
                     pairwiseCount={pairwiseInfo.count}
                     referenceLimit={referenceLimit ?? getConfigReferenceLimit(configNode)}
+                    queueStatus={pairwiseQueueStats[configNode.id]}
                     busy={busyNodeIds.includes(configNode.id)}
                     optimizing={optimizing && optimizeNodeId === configNode.id}
                     onPromptChange={(value) => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, composerContent: value } }))}
                     onConfigChange={(patch) => handleConfigChange(configNode.id, patch)}
                     onToggleLock={() => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, lockResultNodes: !n.metadata?.lockResultNodes } }))}
                     onTogglePairwiseGeneration={() => patchNode(configNode.id, (n) => ({ ...n, metadata: { ...n.metadata, pairwiseGeneration: !n.metadata?.pairwiseGeneration } }))}
+                    onCancelGeneration={() => cancelGenerationForConfig(configNode.id)}
                     onSelect={onSelect}
                     onOptimizePrompt={() => void handleOptimizePrompt(configNode)}
                     onGenerate={() => void runGeneration(configNode)}

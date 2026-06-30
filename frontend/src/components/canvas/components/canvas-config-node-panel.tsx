@@ -1,6 +1,6 @@
 "use client";
 
-import { Lock, LockOpen, Rows3, Sparkles, Wand2 } from "lucide-react";
+import { Lock, LockOpen, OctagonX, Rows3, Sparkles, Wand2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { GenerationParamsBar, type GenerationParamsValue } from "@/components/GenerationParamsBar";
@@ -20,12 +20,14 @@ export function CanvasConfigNodePanel({
   pairwiseAvailable,
   pairwiseCount,
   referenceLimit,
+  queueStatus,
   busy,
   optimizing,
   onPromptChange,
   onConfigChange,
   onToggleLock,
   onTogglePairwiseGeneration,
+  onCancelGeneration,
   onSelect,
   onOptimizePrompt,
   onGenerate,
@@ -38,18 +40,21 @@ export function CanvasConfigNodePanel({
   pairwiseAvailable: boolean;
   pairwiseCount: number;
   referenceLimit: { imageCount: number; max: number; exceeded: boolean };
+  queueStatus?: { running: number; queued: number; total: number; active: boolean };
   busy: boolean;
   optimizing: boolean;
   onPromptChange: (value: string) => void;
   onConfigChange: (patch: Partial<CanvasGenerationConfig>) => void;
   onToggleLock: () => void;
   onTogglePairwiseGeneration: () => void;
+  onCancelGeneration: () => void;
   onSelect: () => void;
   onOptimizePrompt: () => void;
   onGenerate: () => void;
 }) {
   const pairwiseActive = pairwiseGeneration && pairwiseAvailable;
   const referenceLimitExceeded = referenceLimit.exceeded && !pairwiseActive;
+  const hasActiveQueue = Boolean(queueStatus?.active || busy);
   const value: GenerationParamsValue = {
     model: normalizeModel(config.model),
     outputSize: config.outputSize,
@@ -121,11 +126,25 @@ export function CanvasConfigNodePanel({
             <Rows3 className="size-3" />
             <span className="text-[11px]">对应生成</span>
           </Button>
-          <Button size="sm" onClick={onGenerate} disabled={busy || referenceLimitExceeded} className="flex-1">
-            {busy ? <Spinner className="size-4" /> : <Sparkles className="size-4" />}
-            生成
-          </Button>
+          {hasActiveQueue ? (
+            <Button size="sm" variant="destructive" onClick={onCancelGeneration} className="flex-1">
+              <OctagonX className="size-4" />
+              终止
+            </Button>
+          ) : (
+            <Button size="sm" onClick={onGenerate} disabled={referenceLimitExceeded} className="flex-1">
+              <Sparkles className="size-4" />
+              生成
+            </Button>
+          )}
         </div>
+        {queueStatus?.active && (
+          <div className="grid grid-cols-3 gap-1 text-center text-[11px] leading-tight text-muted-foreground">
+            <span className="rounded-md bg-muted px-2 py-1">并发 {queueStatus.running}</span>
+            <span className="rounded-md bg-muted px-2 py-1">排队 {queueStatus.queued}</span>
+            <span className="rounded-md bg-muted px-2 py-1">总数 {queueStatus.total}</span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2 text-[11px] leading-tight">
           <span className={cn("min-w-0 truncate", referenceLimitExceeded ? "text-destructive" : "text-muted-foreground")}>
             当前模型允许参考图数量：{referenceLimit.max}
