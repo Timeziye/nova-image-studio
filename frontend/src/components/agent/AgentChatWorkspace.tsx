@@ -456,7 +456,7 @@ export function AgentChatWorkspace({ wideMode = false, disabled = false, onConfi
     setOptimizeOpen(true);
 
     const handle = streamPromptOptimize(
-      { apiKey: textModel.apiKey, mode: 'agent', prompt: text, context: context || undefined },
+      { apiKey: textModel.apiKey, model: textModel.modelId, mode: 'agent', prompt: text, context: context || undefined },
       {
         onDelta(token) { setOptimizedText(prev => prev + token); },
         onDone() { setOptimizing(false); },
