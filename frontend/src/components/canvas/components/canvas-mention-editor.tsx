@@ -103,24 +103,56 @@ function deepestTextNode(node: ChildNode | null, fromEnd: boolean): Text | null 
   return null;
 }
 
-function getTextInputContext(root: HTMLElement): { textNode: Text; offset: number } | null {
-  const selection = window.getSelection();
-  if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  const container = range.startContainer;
+function resolveTextContext(root: HTMLElement, container: Node, offset: number): { textNode: Text; offset: number } | null {
   if (!root.contains(container)) return null;
   if (container.nodeType === Node.TEXT_NODE) {
-    return { textNode: container as Text, offset: range.startOffset };
+    return { textNode: container as Text, offset };
   }
   if (container.nodeType !== Node.ELEMENT_NODE) return null;
   const element = container as Element;
-  const before = range.startOffset > 0 ? element.childNodes[range.startOffset - 1] : null;
-  const after = element.childNodes[range.startOffset] ?? null;
+  const before = offset > 0 ? element.childNodes[offset - 1] : null;
+  const after = element.childNodes[offset] ?? null;
   const previousText = deepestTextNode(before, true);
   if (previousText) return { textNode: previousText, offset: previousText.data.length };
   const nextText = deepestTextNode(after, false);
   if (nextText) return { textNode: nextText, offset: 0 };
   return null;
+}
+
+function getTextInputContext(root: HTMLElement): { textNode: Text; offset: number } | null {
+  const selection = window.getSelection();
+  if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  return resolveTextContext(root, range.startContainer, range.startOffset);
+}
+
+function getSelectionFocusContext(root: HTMLElement): { textNode: Text; offset: number } | null {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.focusNode) return null;
+  return resolveTextContext(root, selection.focusNode, selection.focusOffset);
+}
+
+function scrollCaretIntoView(root: HTMLElement) {
+  if (root.scrollHeight <= root.clientHeight) return;
+  const context = getSelectionFocusContext(root);
+  if (!context || context.textNode.length === 0) return;
+
+  const end = context.offset > 0 ? context.offset : Math.min(1, context.textNode.length);
+  const start = Math.max(0, end - 1);
+  const range = document.createRange();
+  range.setStart(context.textNode, start);
+  range.setEnd(context.textNode, end);
+
+  const caretRect = range.getBoundingClientRect();
+  const viewportRect = root.getBoundingClientRect();
+  const margin = 8;
+  const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+
+  if (caretRect.bottom > viewportRect.bottom - margin) {
+    root.scrollTop = Math.min(maxScrollTop, root.scrollTop + caretRect.bottom - viewportRect.bottom + margin);
+  } else if (caretRect.top < viewportRect.top + margin) {
+    root.scrollTop = Math.max(0, root.scrollTop - (viewportRect.top - caretRect.top + margin));
+  }
 }
 
 /**
@@ -317,10 +349,12 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
         role="textbox"
         aria-multiline="true"
         spellCheck={false}
-        className={cn("h-full w-full cursor-text whitespace-pre-wrap break-words outline-none", className)}
+        className={cn("h-full w-full cursor-text overflow-y-auto whitespace-pre-wrap break-words outline-none", className)}
         onInput={() => {
           emitChange();
           refreshMention();
+          const editor = editorRef.current;
+          if (editor) scrollCaretIntoView(editor);
         }}
         onKeyUp={refreshMention}
         onMouseUp={refreshMention}
