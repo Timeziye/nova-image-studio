@@ -4,7 +4,6 @@
 
 import { readSseStream } from '@/lib/sse-stream-parser';
 
-const OPTIMIZE_MODEL = 'gpt-5.4-mini';
 const OPTIMIZE_TIMEOUT_MS = 30_000;
 const OPTIMIZE_MAX_ATTEMPTS = 2;
 
@@ -19,6 +18,7 @@ export interface OptimizeImageInput {
 
 export interface StreamPromptOptimizeInput {
   apiKey: string;
+  model: string;
   mode: PromptOptimizeMode;
   prompt: string;
   images?: OptimizeImageInput[];
@@ -212,7 +212,7 @@ async function runAttempt(
   }
 
   const body = {
-    model: OPTIMIZE_MODEL,
+    model: input.model,
     stream: true,
     reasoning: { effort: 'low' as const },
     input: [
