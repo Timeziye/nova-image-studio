@@ -4,7 +4,7 @@
 
 import { readSseStream } from '@/lib/sse-stream-parser';
 
-const OPTIMIZE_TIMEOUT_MS = 30_000;
+const OPTIMIZE_IDLE_TIMEOUT_MS = 60_000;
 const OPTIMIZE_MAX_ATTEMPTS = 2;
 
 // ===== 模式与输入 =====
@@ -130,7 +130,7 @@ export function streamPromptOptimize(
     try {
       await runWithRetry(baseUrl, input, callbacks, controller);
     } catch (err) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted && controller.signal.reason?.name !== 'TimeoutError') return;
       callbacks.onError(normalizeError(err));
     }
   })();
@@ -150,12 +150,12 @@ async function runWithRetry(
   const signal = controller.signal;
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= OPTIMIZE_MAX_ATTEMPTS; attempt++) {
-    if (signal.aborted) return;
+    if (signal.aborted) throw signal.reason;
     try {
       await runAttempt(baseUrl, input, callbacks, controller);
       return;
     } catch (err) {
-      if (signal.aborted) return;
+      if (signal.aborted) throw signal.reason;
       const normalized = normalizeError(err);
       lastError = normalized;
       if (attempt >= OPTIMIZE_MAX_ATTEMPTS || !isRetryable(err)) {
@@ -223,11 +223,16 @@ async function runAttempt(
     ],
   };
 
-  const timeoutId = window.setTimeout(() => {
-    if (!signal.aborted) {
-      controller.abort(new DOMException('优化请求超时', 'TimeoutError'));
-    }
-  }, OPTIMIZE_TIMEOUT_MS);
+  let timeoutId: number | undefined;
+  const resetIdleTimeout = () => {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    timeoutId = window.setTimeout(() => {
+      if (!signal.aborted) {
+        controller.abort(new DOMException('优化请求超时（连续 60 秒无响应）', 'TimeoutError'));
+      }
+    }, OPTIMIZE_IDLE_TIMEOUT_MS);
+  };
+  resetIdleTimeout();
 
   try {
     const response = await fetch(`${baseUrl}/v1/responses`, {
@@ -310,11 +315,12 @@ async function runAttempt(
         const message = payload.error?.message || payload.message || '模型返回错误';
         throw new Error(message);
       }
-    });
+    }, resetIdleTimeout);
 
+    if (signal.aborted) throw signal.reason;
     fireDone();
   } finally {
-    window.clearTimeout(timeoutId);
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   }
 }
 

@@ -12,6 +12,7 @@ export async function readSseStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   onEvent: (event: SseEvent) => void,
+  onChunk?: () => void,
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -22,6 +23,7 @@ export async function readSseStream(
       if (signal.aborted) return;
       const { value, done } = await reader.read();
       if (done) break;
+      if (value?.byteLength) onChunk?.();
       buffer += decoder.decode(value, { stream: true });
 
       while (true) {
