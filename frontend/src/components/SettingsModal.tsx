@@ -49,7 +49,7 @@ import {
 } from '@/lib/nova-models';
 import { syncDynamicModelExports } from '@/lib/gemini-config';
 import { exportAllData, importAllData, downloadBlob, generateBackupFilename, type BackupProgress as BackupProgressType } from '@/lib/backup-utils';
-import { checkModelsAvailability, type ModelStatus } from '@/lib/ccode-task-client';
+import { checkModelsAvailability, getNovaQueueStatus, updateNovaPerKeyConcurrency, type ModelStatus, type NovaQueueStatus } from '@/lib/ccode-task-client';
 import { hasAnyApiKey } from '@/lib/settings-storage';
 import { BA_RANDOM_URL, BING_WALLPAPER_URL } from '@/lib/constants';
 import { PROMPT_DATA_SOURCES, getPromptSourceLabel } from '@/lib/prompt-gallery-data';
@@ -144,6 +144,12 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
   const [checkingModels, setCheckingModels] = useState(false);
   const [modelStatuses, setModelStatuses] = useState<ModelStatus[] | null>(null);
   const [modelCheckError, setModelCheckError] = useState<string | null>(null);
+  const [queueStatus, setQueueStatus] = useState<NovaQueueStatus | null>(null);
+  const [perKeyConcurrency, setPerKeyConcurrency] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [concurrencySaving, setConcurrencySaving] = useState(false);
+  const [concurrencyError, setConcurrencyError] = useState<string | null>(null);
+  const [concurrencySuccess, setConcurrencySuccess] = useState<string | null>(null);
 
   const [backupProgress, setBackupProgress] = useState<BackupProgressType>({ percent: 0, message: '' });
   const [isBackupActive, setIsBackupActive] = useState(false);
@@ -165,6 +171,19 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     setModelCheckError(null);
     setBackupError(null);
     setBackupSuccess(null);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    getNovaQueueStatus().then((status) => {
+      if (!active) return;
+      setQueueStatus(status);
+      setPerKeyConcurrency(String(status.configuredPerKeyConcurrency));
+    }).catch((err) => {
+      if (active) setConcurrencyError(err instanceof Error ? err.message : '读取并发设置失败');
+    });
+    return () => { active = false; };
   }, [isOpen]);
 
   useEffect(() => {
@@ -317,6 +336,33 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
     }
   };
 
+  const handleSaveConcurrency = async () => {
+    const max = queueStatus?.perKeyConcurrencyLimit;
+    const value = Number(perKeyConcurrency);
+    if (!max || !/^\d+$/.test(perKeyConcurrency.trim()) || !Number.isInteger(value) || value < 1 || value > max) {
+      setConcurrencyError(`请输入 1 到 ${max || 10} 的整数`);
+      return;
+    }
+    if (!adminPassword) {
+      setConcurrencyError('请输入管理员口令');
+      return;
+    }
+    setConcurrencySaving(true);
+    setConcurrencyError(null);
+    setConcurrencySuccess(null);
+    try {
+      const status = await updateNovaPerKeyConcurrency(value, adminPassword);
+      setQueueStatus(status);
+      setPerKeyConcurrency(String(status.configuredPerKeyConcurrency));
+      setAdminPassword('');
+      setConcurrencySuccess('全站同密钥并发上限已保存');
+    } catch (err) {
+      setConcurrencyError(err instanceof Error ? err.message : '保存并发设置失败');
+    } finally {
+      setConcurrencySaving(false);
+    }
+  };
+
   const handleExport = async () => {
     setIsBackupActive(true);
     setBackupError(null);
@@ -365,7 +411,13 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
   return (
     <Dialog open={isOpen} onOpenChange={(open) => {
       if (!open && isBackupActive) return;
-      if (!open) onClose();
+      if (!open) {
+        setQueueStatus(null);
+        setAdminPassword('');
+        setConcurrencyError(null);
+        setConcurrencySuccess(null);
+        onClose();
+      }
     }}>
       <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden p-0 pt-0 gap-0 sm:max-w-5xl">
         <DialogHeader className="p-4 pb-3">
@@ -381,6 +433,10 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
             <TabsTrigger value="models" className="gap-2 rounded-none border-b-2 border-transparent data-active:border-primary data-active:bg-transparent data-active:shadow-none px-4 py-3">
               <ImageIcon className="w-4 h-4" />
               模型配置
+            </TabsTrigger>
+            <TabsTrigger value="concurrency" className="gap-2 rounded-none border-b-2 border-transparent data-active:border-primary data-active:bg-transparent data-active:shadow-none px-4 py-3">
+              <Settings className="w-4 h-4" />
+              全局并发
             </TabsTrigger>
             <TabsTrigger value="backup" className="gap-2 rounded-none border-b-2 border-transparent data-active:border-primary data-active:bg-transparent data-active:shadow-none px-4 py-3">
               <Database className="w-4 h-4" />
@@ -634,6 +690,59 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                   ))}
                 </div>
               )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="concurrency" className="min-h-0 overflow-y-auto p-4 sm:p-6 space-y-6 mt-0">
+            <div className="rounded-xl border p-4 space-y-4">
+              <div className="space-y-1">
+                <h3 className="font-medium">同一 API Key 并发上限</h3>
+                <p className="text-xs text-muted-foreground">
+                  此设置在服务器保存，对所有访问本站的用户生效；使用同一 API Key 的任务共享该上限。
+                  服务器所有密钥合计上限与每分钟提交频率是独立限制。
+                </p>
+              </div>
+              {!queueStatus && !concurrencyError ? (
+                <p className="text-sm text-muted-foreground">正在读取服务器设置…</p>
+              ) : queueStatus ? (
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    当前值 {queueStatus.configuredPerKeyConcurrency}；可填写 1–{queueStatus.perKeyConcurrencyLimit} 的整数。
+                    服务器总并发上限为 {queueStatus.concurrencyLimit}。
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label htmlFor="nova-per-key-concurrency" className="text-sm font-medium">并发数</label>
+                      <Input
+                        id="nova-per-key-concurrency"
+                        type="number"
+                        min={1}
+                        max={queueStatus.perKeyConcurrencyLimit}
+                        step={1}
+                        value={perKeyConcurrency}
+                        onChange={(event) => setPerKeyConcurrency(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor="nova-admin-password" className="text-sm font-medium">管理员口令</label>
+                      <Input
+                        id="nova-admin-password"
+                        type="password"
+                        autoComplete="off"
+                        value={adminPassword}
+                        onChange={(event) => setAdminPassword(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">口令仅用于本次保存，不写入浏览器存储。降低并发不会中断已开始的生成。</p>
+                  <Button onClick={handleSaveConcurrency} disabled={concurrencySaving} className="gap-2">
+                    <Save className="w-4 h-4" />
+                    {concurrencySaving ? '保存中…' : '保存全站设置'}
+                  </Button>
+                </div>
+              ) : null}
+              {concurrencyError && <p className="text-sm text-destructive">{concurrencyError}</p>}
+              {concurrencySuccess && <p className="text-sm text-emerald-700 dark:text-emerald-400">{concurrencySuccess}</p>}
             </div>
           </TabsContent>
 

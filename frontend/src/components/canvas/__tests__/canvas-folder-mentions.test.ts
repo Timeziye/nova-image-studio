@@ -147,5 +147,18 @@ describe('canvas folder image mentions', () => {
     ]);
     expect(contexts.map(item => item.context.imageCount)).toEqual([1, 1]);
     expect(contexts.map(item => item.context.referenceImages[0]?.id)).toEqual(['asset-1', 'asset-2']);
+    expect(contexts.map(item => item.resultTitle)).toEqual(['a.png', 'b.png']);
+  });
+
+  it('corresponding generation keeps a standalone source node title', () => {
+    const nodes = [
+      imageNode('image-1', 'APS的本质'),
+      imageNode('image-2', '产能评估'),
+      configNode('config-1', 'Use @[all-images] as reference'),
+    ];
+
+    const contexts = buildPairwiseGenerationContexts('config-1', nodes, connections, nodes[2].metadata?.composerContent || '');
+
+    expect(contexts.map(item => item.resultTitle)).toEqual(['APS的本质', '产能评估']);
   });
 });

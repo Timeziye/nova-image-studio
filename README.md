@@ -266,6 +266,7 @@ npm run build
 ```text
 frontend/out/
 backend/server.js
+backend/concurrency-control.js
 backend/package.json
 backend/package-lock.json
 backend/prompts.json
@@ -288,6 +289,12 @@ npm start                # 或 npm run server
 
 - 进程对 `NOVA_TASK_DB` 指向的 SQLite 文件有读写权限
 - 反向代理（Nginx / Caddy / 云网关）将域名转到 `http://127.0.0.1:3000`
+
+### 管理全站同密钥并发
+
+「设置 → 全局并发」可将所有用户统一适用的**同一 API Key 图片并发上限**设为 1–10。服务器所有密钥合计的 50 槽上限，以及每分钟提交频率和待处理任务数量限制，仍分别生效。降低并发不会中断已开始的生成；设置保存在 `NOVA_TASK_DB` 指向的 SQLite 数据库中，重启后保持。
+
+保存时必须输入独立的管理员口令。服务器从 `NOVA_ADMIN_PASSWORD_FILE` 指向的文件读取；未设置该变量时，默认读取数据库同目录下的 `nova-admin-password`。部署者应在服务器上创建强随机口令文件并设为仅服务进程可读（例如权限 `0600`）；不要将口令写入仓库、Docker 镜像或浏览器本地存储。普通访客可以查看当前并发值，但无法修改。
 
 ### 5. 一键打包
 

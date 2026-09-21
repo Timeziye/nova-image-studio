@@ -22,6 +22,7 @@ export type NodeGenerationInput = {
 export type PairwiseGenerationContext = {
   input: NodeGenerationInput;
   index: number;
+  resultTitle: string;
   context: NodeGenerationContext;
 };
 
@@ -55,6 +56,9 @@ export function buildPairwiseGenerationContexts(nodeId: string, nodes: CanvasNod
   return imageInputs.map((input, index) => ({
     input,
     index,
+    resultTitle: input.resourceToken.startsWith('node-image:')
+      ? input.image?.name?.trim() || input.title.trim()
+      : input.title.trim() || input.image?.name?.trim() || '图片节点',
     context: buildComposerGenerationContext([...textInputs, input], prompt),
   }));
 }

@@ -39,6 +39,7 @@ import { streamPromptOptimize, type StreamPromptOptimizeHandle, type OptimizeIma
 import { requireDefaultConfiguredTextModel } from "@/lib/model-endpoints";
 import { MODEL_IMAGE_LIMITS } from "@/lib/gemini-config";
 import { normalizeModel } from "@/lib/model-capabilities";
+import { getNovaQueueStatus } from "@/lib/ccode-task-client";
 import type { PromptWithKey } from "@/lib/prompt-gallery-data";
 
 type DialogState = { type: "crop" | "split" | "upscale" | "angle"; nodeId: string; source: string } | null;
@@ -61,7 +62,7 @@ const RESULT_GRID_COLUMN_GAP = 420;
 const RESULT_GRID_ROW_GAP = 300;
 const PAIRWISE_GALLERY_ROWS_PER_COLUMN = 15;
 const PAIRWISE_GALLERY_GROUP_GAP_X = 240;
-const PAIRWISE_GENERATION_CONCURRENCY = 10;
+const PAIRWISE_FALLBACK_CONCURRENCY = 10;
 const CANVAS_MENTION_TOKEN_PATTERN = /@\[[^\]]+\]/g;
 const ACTIVE_GENERATION_STATUSES = ["submitting", "queued", "processing", "loading"];
 const PAIRWISE_QUEUE_BACKOFF_ERROR_PATTERN = /较多任务|排队|请求太频繁|频繁|rate.?limit|too many|queue/i;
@@ -1260,6 +1261,16 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
           return;
         }
 
+        let pairwiseConcurrency = PAIRWISE_FALLBACK_CONCURRENCY;
+        try {
+          const status = await getNovaQueueStatus();
+          if (Number.isInteger(status.configuredPerKeyConcurrency) && status.configuredPerKeyConcurrency >= 1) {
+            pairwiseConcurrency = Math.min(status.configuredPerKeyConcurrency, status.perKeyConcurrencyLimit || PAIRWISE_FALLBACK_CONCURRENCY);
+          }
+        } catch {
+          showToast("未能读取全站并发设置，暂按默认值提交；服务器仍会执行实际限制", "info");
+        }
+
         const pairwiseConfig: CanvasGenerationConfig = { ...genConfig, count: 1 };
         const sourceNodeIds = Array.from(new Set(pairwiseContexts.map((item) => item.input.nodeId)));
         const sourceTotals = new Map<string, number>();
@@ -1281,7 +1292,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
           const sourceColumnOffset = sourceColumnOffsets.get(item.input.nodeId) || 0;
           const node = createImageNode(
             getPairwiseResultNodePosition(sourceNode, inputNode, index, pairwiseContexts.length, sourceColumnOffset, indexInSource),
-            { metadata: { status: "queued", pairwiseGenerationContext: item.context } },
+            { title: item.resultTitle, metadata: { status: "queued", pairwiseGenerationContext: item.context } },
           );
           return { item, node };
         });
@@ -1293,12 +1304,12 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         setSelectedIds([sourceNode.id]);
         setSelectedConnectionIds([]);
 
-        showToast(`已创建 ${planned.length} 个对应生成任务，最多同时提交 ${PAIRWISE_GENERATION_CONCURRENCY} 个`, "info");
+        showToast(`已创建 ${planned.length} 个对应生成任务，同一密钥最多同时提交 ${pairwiseConcurrency} 个`, "info");
         pairwiseQueuesRef.current.set(sourceNode.id, { cancelled: false, nodeIds: planned.map(({ node }) => node.id), cancelledNodeIds: new Set() });
         updatePairwiseQueueStats(sourceNode.id, { running: 0, queued: planned.length, total: planned.length, active: true });
         setBusy(sourceNode.id, true);
         const queue = [...planned];
-        const workers = Array.from({ length: Math.min(PAIRWISE_GENERATION_CONCURRENCY, queue.length) }, async () => {
+        const workers = Array.from({ length: Math.min(pairwiseConcurrency, queue.length) }, async () => {
           while (queue.length) {
             const control = pairwiseQueuesRef.current.get(sourceNode.id);
             if (!control || control.cancelled) return;

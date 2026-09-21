@@ -66,6 +66,8 @@ export interface NovaTaskResponse {
 export interface NovaQueueStatus {
   concurrencyLimit: number;
   configuredConcurrency: number;
+  perKeyConcurrencyLimit: number;
+  configuredPerKeyConcurrency: number;
   processingCount: number;
   queuedCount: number;
   pendingCount?: number;
@@ -369,6 +371,18 @@ export async function getNovaQueueStatus(): Promise<NovaQueueStatus> {
   const response = await fetchWithTimeout('/api/nova/queue-status', {
     method: 'GET',
     cache: 'no-store',
+  }, TASK_REQUEST_TIMEOUT);
+  return parseTaskResponse(response);
+}
+
+export async function updateNovaPerKeyConcurrency(value: number, adminPassword: string): Promise<NovaQueueStatus> {
+  const response = await fetchWithTimeout('/api/nova/admin/per-key-concurrency', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminPassword}`,
+    },
+    body: JSON.stringify({ value }),
   }, TASK_REQUEST_TIMEOUT);
   return parseTaskResponse(response);
 }

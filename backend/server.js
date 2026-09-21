@@ -5,6 +5,13 @@ const path = require('path');
 const next = require('next');
 const Database = require('better-sqlite3');
 const { WebSocketServer } = require('ws');
+const {
+  validateConcurrency,
+  normalizeConcurrency,
+  selectRunnableTask,
+  runItemsWithConcurrency,
+  verifyAdminPassword,
+} = require('./concurrency-control');
 
 const ENV_FILE_PATH = path.join(process.cwd(), '.env');
 const TASK_STATUS = {
@@ -16,6 +23,8 @@ const TASK_STATUS = {
 };
 const TASK_CANCELLED_ERROR = '已终止';
 const GLOBAL_TASK_CONCURRENCY = 50;
+const MAX_PER_KEY_CONCURRENCY = 10;
+const PER_KEY_CONCURRENCY_SETTING = 'per_key_concurrency';
 const DEFAULT_LIMIT_CONFIG = {
   maxQueueSize: 200,
   rateLimitWindowMs: 60 * 1000,
@@ -120,6 +129,7 @@ function hashPromptGalleryPassword(password) {
 const PORT = Number(process.env.PORT || 3000);
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 const DB_PATH = process.env.NOVA_TASK_DB || path.join(__dirname, 'nova-tasks.sqlite');
+const ADMIN_PASSWORD_FILE = process.env.NOVA_ADMIN_PASSWORD_FILE || path.join(path.dirname(DB_PATH), 'nova-admin-password');
 const TASK_TTL_MS = 12 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -157,6 +167,8 @@ const pendingCountByIp = new Map(); // ip -> count
 const pendingCountByApiKeyHash = new Map(); // apiKeyHash -> count
 const queue = [];
 let activeCount = 0;
+const activeCountByApiKey = new Map();
+let configuredPerKeyConcurrency = MAX_PER_KEY_CONCURRENCY;
 
 // ===== WebSocket subscription state =====
 const taskSubscriptions = new Map(); // WebSocket -> Set<taskId>
@@ -175,6 +187,28 @@ function getMaxServerConcurrency() {
   const configured = Number(getRuntimeEnv().NOVA_TASK_CONCURRENCY || GLOBAL_TASK_CONCURRENCY);
   const safeConfigured = Number.isFinite(configured) ? configured : GLOBAL_TASK_CONCURRENCY;
   return Math.max(1, Math.min(GLOBAL_TASK_CONCURRENCY, safeConfigured));
+}
+
+function readAdminPassword() {
+  try {
+    return fs.readFileSync(ADMIN_PASSWORD_FILE, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function requireAdminPassword(req) {
+  const expected = readAdminPassword();
+  if (!expected) {
+    req.resume();
+    throw createHttpError(503, 'ADMIN_PASSWORD_NOT_CONFIGURED', '管理员口令尚未配置');
+  }
+  const authorization = String(req.headers.authorization || '');
+  const provided = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (!verifyAdminPassword(provided, expected)) {
+    req.resume();
+    throw createHttpError(401, 'ADMIN_UNAUTHORIZED', '管理员口令错误');
+  }
 }
 
 function parseIntegerEnv(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
@@ -340,6 +374,8 @@ function getQueueStats() {
   return {
     concurrencyLimit: GLOBAL_TASK_CONCURRENCY,
     configuredConcurrency: getMaxServerConcurrency(),
+    perKeyConcurrencyLimit: MAX_PER_KEY_CONCURRENCY,
+    configuredPerKeyConcurrency,
     processingCount,
     queuedCount,
     pendingCount: totalActiveTasks,
@@ -462,10 +498,17 @@ function initDatabase() {
       completed_at TEXT,
       PRIMARY KEY (task_id, item_index)
     );
+    CREATE TABLE IF NOT EXISTS server_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_expires_at ON tasks(expires_at);
     CREATE INDEX IF NOT EXISTS idx_task_items_task_id ON task_items(task_id);
   `);
+
+  const perKeySetting = db.prepare('SELECT value FROM server_settings WHERE key = ?').get(PER_KEY_CONCURRENCY_SETTING);
+  configuredPerKeyConcurrency = normalizeConcurrency(perKeySetting?.value, MAX_PER_KEY_CONCURRENCY, MAX_PER_KEY_CONCURRENCY);
 
   const now = new Date().toISOString();
   db.prepare('UPDATE tasks SET status = ? WHERE status = ?').run(TASK_STATUS.QUEUED, TASK_STATUS.LEGACY_QUEUED);
@@ -1154,23 +1197,28 @@ async function generateNovaGeminiImage(apiKey, request, options = {}) {
 
 function drainQueue() {
   const maxConcurrency = getMaxServerConcurrency();
+  const requestStatement = db.prepare('SELECT request_json FROM tasks WHERE id = ?');
   while (queue.length > 0) {
-    const taskId = queue[0];
-    const task = db.prepare('SELECT request_json FROM tasks WHERE id = ?').get(taskId);
-    const req = task ? JSON.parse(task.request_json) : null;
-    const imageSlots = req?.parallelCount || 1;
+    const candidates = queue.map((taskId) => {
+      const task = requestStatement.get(taskId);
+      const request = task ? JSON.parse(task.request_json) : null;
+      return {
+        id: taskId,
+        key: taskSources.get(taskId)?.apiKeyHash || `missing:${taskId}`,
+        parallelCount: request?.parallelCount || 1,
+      };
+    });
+    const selected = selectRunnableTask(candidates, activeCountByApiKey, configuredPerKeyConcurrency, maxConcurrency, activeCount);
+    if (!selected) break;
 
-    // 容量足够 → 放行。容量不足时唯一例外：当前空闲（activeCount===0）且该任务
-    // 自身就超过总并发，允许其独占运行（否则永远无法被调度）；其余情况一律等待
-    // 在飞任务腾出名额。
-    const fitsWithinLimit = activeCount + imageSlots <= maxConcurrency;
-    const oversizedTaskCanRunAlone = activeCount === 0 && imageSlots > maxConcurrency;
-    if (!fitsWithinLimit && !oversizedTaskCanRunAlone) break;
-
-    queue.shift();
-    activeCount += imageSlots;
-    runTask(taskId).finally(() => {
-      activeCount -= imageSlots;
+    const [taskId] = queue.splice(selected.index, 1);
+    activeCount += selected.slots;
+    activeCountByApiKey.set(selected.key, (activeCountByApiKey.get(selected.key) || 0) + selected.slots);
+    runTask(taskId, selected.slots).finally(() => {
+      activeCount -= selected.slots;
+      const remaining = (activeCountByApiKey.get(selected.key) || 0) - selected.slots;
+      if (remaining > 0) activeCountByApiKey.set(selected.key, remaining);
+      else activeCountByApiKey.delete(selected.key);
       drainQueue();
     });
   }
@@ -1209,7 +1257,7 @@ function isTaskMarkedCancelled(taskId) {
   return row?.status === TASK_STATUS.FAILED && row?.error === TASK_CANCELLED_ERROR;
 }
 
-async function runTask(taskId) {
+async function runTask(taskId, reservedSlots) {
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
   const apiKey = apiKeys.get(taskId);
   if (!task || !apiKey || ![TASK_STATUS.QUEUED, TASK_STATUS.LEGACY_QUEUED].includes(task.status)) {
@@ -1236,11 +1284,11 @@ async function runTask(taskId) {
         .run(new Date().toISOString(), taskId, index);
     }
 
-    // 真正并发生成所有图片
-    const itemResults = await Promise.allSettled(
-      Array.from({ length: request.parallelCount }, (_, index) =>
-        generateSingleImage(apiKey, request, taskId, index, controller.signal)
-      )
+    // 一个任务包含多张图片时，仍按该密钥已保留的槽数生成。
+    const itemResults = await runItemsWithConcurrency(
+      request.parallelCount,
+      reservedSlots,
+      (index) => generateSingleImage(apiKey, request, taskId, index, controller.signal),
     );
 
     if (controller.signal.aborted || isTaskMarkedCancelled(taskId)) return;
@@ -1535,6 +1583,26 @@ async function handleApi(req, res, pathname) {
     const apiPathname = pathname.replace(/\/+$/, '');
 
     if (req.method === 'GET' && apiPathname === '/api/nova/queue-status') {
+      sendJson(res, 200, getQueueStats());
+      return true;
+    }
+
+    if (req.method === 'PUT' && apiPathname === '/api/nova/admin/per-key-concurrency') {
+      requireAdminPassword(req);
+      const body = await readJsonBody(req);
+      let value;
+      try {
+        value = validateConcurrency(body?.value, MAX_PER_KEY_CONCURRENCY);
+      } catch {
+        throw createHttpError(400, 'INVALID_CONCURRENCY', `并发数必须是 1 到 ${MAX_PER_KEY_CONCURRENCY} 的整数`);
+      }
+      db.prepare(`
+        INSERT INTO server_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(PER_KEY_CONCURRENCY_SETTING, String(value));
+      configuredPerKeyConcurrency = value;
+      drainQueue();
+      broadcastQueueStatus();
       sendJson(res, 200, getQueueStats());
       return true;
     }

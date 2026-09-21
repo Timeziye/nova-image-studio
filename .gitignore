@@ -24,6 +24,7 @@ out.zip
 # database & images (backend)
 backend/nova-tasks.sqlite*
 backend/nova-images/
+backend/nova-admin-password
 
 # IDE/Editor configs
 .arts/
