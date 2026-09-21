@@ -50,7 +50,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
 export function buildPairwiseGenerationContexts(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string): PairwiseGenerationContext[] {
   const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
   const imageInputs = inputs.filter((input) => input.type === "image" && input.image);
-  if (imageInputs.length < 2) return [];
+  if (imageInputs.length === 0) return [];
 
   const textInputs = inputs.filter((input) => input.type === "text");
   return imageInputs.map((input, index) => ({

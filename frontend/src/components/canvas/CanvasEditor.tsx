@@ -1015,7 +1015,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
   const getConfigPairwiseInfo = useCallback(
     (configNode: CanvasNodeData) => {
       const count = buildNodeGenerationInputs(configNode.id, nodes, connections).filter((input) => input.type === "image" && input.image).length;
-      return { count, available: count > 1 };
+      return { count, available: count > 0 };
     },
     [connections, nodes],
   );
@@ -1255,7 +1255,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
       const maxReferenceImages = MODEL_IMAGE_LIMITS[model]?.max || 1;
 
       const pairwiseContexts = sourceNode.metadata?.pairwiseGeneration ? buildPairwiseGenerationContexts(sourceNode.id, nodes, connections, promptText) : [];
-      if (pairwiseContexts.length > 1) {
+      if (pairwiseContexts.length > 0) {
         if (pairwiseContexts.some((item) => item.context.imageCount > maxReferenceImages)) {
           showToast("参考图超过模型限制", "error");
           return;

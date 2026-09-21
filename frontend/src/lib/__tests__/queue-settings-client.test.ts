@@ -5,7 +5,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('global per-key concurrency settings', () => {
   it('sends the requested value with an admin password to the server', async () => {
-    const status = { perKeyConcurrencyLimit: 10, configuredPerKeyConcurrency: 4 };
+    const status = { perKeyConcurrencyMinimum: 4, perKeyConcurrencyLimit: 10, configuredPerKeyConcurrency: 4 };
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => status });
     vi.stubGlobal('fetch', fetchMock);
 

@@ -66,6 +66,7 @@ export interface NovaTaskResponse {
 export interface NovaQueueStatus {
   concurrencyLimit: number;
   configuredConcurrency: number;
+  perKeyConcurrencyMinimum: number;
   perKeyConcurrencyLimit: number;
   configuredPerKeyConcurrency: number;
   processingCount: number;

@@ -337,10 +337,11 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
   };
 
   const handleSaveConcurrency = async () => {
+    const min = queueStatus?.perKeyConcurrencyMinimum;
     const max = queueStatus?.perKeyConcurrencyLimit;
     const value = Number(perKeyConcurrency);
-    if (!max || !/^\d+$/.test(perKeyConcurrency.trim()) || !Number.isInteger(value) || value < 1 || value > max) {
-      setConcurrencyError(`请输入 1 到 ${max || 10} 的整数`);
+    if (!min || !max || !/^\d+$/.test(perKeyConcurrency.trim()) || !Number.isInteger(value) || value < min || value > max) {
+      setConcurrencyError(`请输入 ${min || 4} 到 ${max || 10} 的整数`);
       return;
     }
     if (!adminPassword) {
@@ -707,7 +708,7 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
               ) : queueStatus ? (
                 <div className="space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    当前值 {queueStatus.configuredPerKeyConcurrency}；可填写 1–{queueStatus.perKeyConcurrencyLimit} 的整数。
+                    当前值 {queueStatus.configuredPerKeyConcurrency}；可填写 {queueStatus.perKeyConcurrencyMinimum}–{queueStatus.perKeyConcurrencyLimit} 的整数。
                     服务器总并发上限为 {queueStatus.concurrencyLimit}。
                   </p>
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -716,7 +717,7 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                       <Input
                         id="nova-per-key-concurrency"
                         type="number"
-                        min={1}
+                        min={queueStatus.perKeyConcurrencyMinimum}
                         max={queueStatus.perKeyConcurrencyLimit}
                         step={1}
                         value={perKeyConcurrency}

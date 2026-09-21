@@ -8,8 +8,8 @@ const { WebSocketServer } = require('ws');
 const {
   validateConcurrency,
   normalizeConcurrency,
-  selectRunnableTask,
-  runItemsWithConcurrency,
+  clampServerConcurrency,
+  selectRunnableTasks,
   verifyAdminPassword,
 } = require('./concurrency-control');
 
@@ -23,6 +23,7 @@ const TASK_STATUS = {
 };
 const TASK_CANCELLED_ERROR = '已终止';
 const GLOBAL_TASK_CONCURRENCY = 50;
+const MIN_PER_KEY_CONCURRENCY = 4;
 const MAX_PER_KEY_CONCURRENCY = 10;
 const PER_KEY_CONCURRENCY_SETTING = 'per_key_concurrency';
 const DEFAULT_LIMIT_CONFIG = {
@@ -184,9 +185,7 @@ let queueBroadcastTimer = null;
 let queueBroadcastPending = false;
 
 function getMaxServerConcurrency() {
-  const configured = Number(getRuntimeEnv().NOVA_TASK_CONCURRENCY || GLOBAL_TASK_CONCURRENCY);
-  const safeConfigured = Number.isFinite(configured) ? configured : GLOBAL_TASK_CONCURRENCY;
-  return Math.max(1, Math.min(GLOBAL_TASK_CONCURRENCY, safeConfigured));
+  return clampServerConcurrency(getRuntimeEnv().NOVA_TASK_CONCURRENCY, MIN_PER_KEY_CONCURRENCY, GLOBAL_TASK_CONCURRENCY, GLOBAL_TASK_CONCURRENCY);
 }
 
 function readAdminPassword() {
@@ -374,6 +373,7 @@ function getQueueStats() {
   return {
     concurrencyLimit: GLOBAL_TASK_CONCURRENCY,
     configuredConcurrency: getMaxServerConcurrency(),
+    perKeyConcurrencyMinimum: MIN_PER_KEY_CONCURRENCY,
     perKeyConcurrencyLimit: MAX_PER_KEY_CONCURRENCY,
     configuredPerKeyConcurrency,
     processingCount,
@@ -508,7 +508,7 @@ function initDatabase() {
   `);
 
   const perKeySetting = db.prepare('SELECT value FROM server_settings WHERE key = ?').get(PER_KEY_CONCURRENCY_SETTING);
-  configuredPerKeyConcurrency = normalizeConcurrency(perKeySetting?.value, MAX_PER_KEY_CONCURRENCY, MAX_PER_KEY_CONCURRENCY);
+  configuredPerKeyConcurrency = normalizeConcurrency(perKeySetting?.value, MIN_PER_KEY_CONCURRENCY, MAX_PER_KEY_CONCURRENCY, MAX_PER_KEY_CONCURRENCY);
 
   const now = new Date().toISOString();
   db.prepare('UPDATE tasks SET status = ? WHERE status = ?').run(TASK_STATUS.QUEUED, TASK_STATUS.LEGACY_QUEUED);
@@ -752,7 +752,7 @@ function createTask(body, req) {
   // 递增 pending 计数
   if (source.ip) pendingCountByIp.set(source.ip, (pendingCountByIp.get(source.ip) || 0) + 1);
   if (source.apiKeyHash) pendingCountByApiKeyHash.set(source.apiKeyHash, (pendingCountByApiKeyHash.get(source.apiKeyHash) || 0) + 1);
-  queue.push(taskId);
+  queue.push({ id: taskId, key: source.apiKeyHash, parallelCount: body.parallelCount });
   broadcastTask(taskId);
   broadcastQueueStatus();
   drainQueue();
@@ -1197,24 +1197,16 @@ async function generateNovaGeminiImage(apiKey, request, options = {}) {
 
 function drainQueue() {
   const maxConcurrency = getMaxServerConcurrency();
-  const requestStatement = db.prepare('SELECT request_json FROM tasks WHERE id = ?');
-  while (queue.length > 0) {
-    const candidates = queue.map((taskId) => {
-      const task = requestStatement.get(taskId);
-      const request = task ? JSON.parse(task.request_json) : null;
-      return {
-        id: taskId,
-        key: taskSources.get(taskId)?.apiKeyHash || `missing:${taskId}`,
-        parallelCount: request?.parallelCount || 1,
-      };
-    });
-    const selected = selectRunnableTask(candidates, activeCountByApiKey, configuredPerKeyConcurrency, maxConcurrency, activeCount);
-    if (!selected) break;
-
-    const [taskId] = queue.splice(selected.index, 1);
+  const selectedTasks = selectRunnableTasks(queue, activeCountByApiKey, configuredPerKeyConcurrency, maxConcurrency, activeCount);
+  if (selectedTasks.length === 0) return;
+  const selectedIds = new Set(selectedTasks.map((task) => task.id));
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    if (selectedIds.has(queue[index].id)) queue.splice(index, 1);
+  }
+  for (const selected of selectedTasks) {
     activeCount += selected.slots;
     activeCountByApiKey.set(selected.key, (activeCountByApiKey.get(selected.key) || 0) + selected.slots);
-    runTask(taskId, selected.slots).finally(() => {
+    runTask(selected.id).finally(() => {
       activeCount -= selected.slots;
       const remaining = (activeCountByApiKey.get(selected.key) || 0) - selected.slots;
       if (remaining > 0) activeCountByApiKey.set(selected.key, remaining);
@@ -1257,7 +1249,7 @@ function isTaskMarkedCancelled(taskId) {
   return row?.status === TASK_STATUS.FAILED && row?.error === TASK_CANCELLED_ERROR;
 }
 
-async function runTask(taskId, reservedSlots) {
+async function runTask(taskId) {
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
   const apiKey = apiKeys.get(taskId);
   if (!task || !apiKey || ![TASK_STATUS.QUEUED, TASK_STATUS.LEGACY_QUEUED].includes(task.status)) {
@@ -1284,11 +1276,11 @@ async function runTask(taskId, reservedSlots) {
         .run(new Date().toISOString(), taskId, index);
     }
 
-    // 一个任务包含多张图片时，仍按该密钥已保留的槽数生成。
-    const itemResults = await runItemsWithConcurrency(
-      request.parallelCount,
-      reservedSlots,
-      (index) => generateSingleImage(apiKey, request, taskId, index, controller.signal),
+    // 调度器已为整个任务原子保留所有图片槽位，这里按请求数量并发生成。
+    const itemResults = await Promise.allSettled(
+      Array.from({ length: request.parallelCount }, (_, index) =>
+        generateSingleImage(apiKey, request, taskId, index, controller.signal)
+      )
     );
 
     if (controller.signal.aborted || isTaskMarkedCancelled(taskId)) return;
@@ -1360,7 +1352,7 @@ function cancelTask(taskId) {
   const task = db.prepare('SELECT id, status FROM tasks WHERE id = ?').get(taskId);
   if (!task) return false;
 
-  const queueIndex = queue.indexOf(taskId);
+  const queueIndex = queue.findIndex((queuedTask) => queuedTask.id === taskId);
   if (queueIndex >= 0) queue.splice(queueIndex, 1);
 
   const controller = runningTaskControllers.get(taskId);
@@ -1592,9 +1584,9 @@ async function handleApi(req, res, pathname) {
       const body = await readJsonBody(req);
       let value;
       try {
-        value = validateConcurrency(body?.value, MAX_PER_KEY_CONCURRENCY);
+        value = validateConcurrency(body?.value, MIN_PER_KEY_CONCURRENCY, MAX_PER_KEY_CONCURRENCY);
       } catch {
-        throw createHttpError(400, 'INVALID_CONCURRENCY', `并发数必须是 1 到 ${MAX_PER_KEY_CONCURRENCY} 的整数`);
+        throw createHttpError(400, 'INVALID_CONCURRENCY', `并发数必须是 ${MIN_PER_KEY_CONCURRENCY} 到 ${MAX_PER_KEY_CONCURRENCY} 的整数`);
       }
       db.prepare(`
         INSERT INTO server_settings (key, value) VALUES (?, ?)

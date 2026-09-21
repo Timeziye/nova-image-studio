@@ -59,6 +59,7 @@ test('admin-only per-key setting is validated and survives a server restart', { 
     server = await startServer(port, directory);
     const initial = await (await fetch(`${server.baseUrl}/api/nova/queue-status`)).json();
     assert.equal(initial.concurrencyLimit, 50);
+    assert.equal(initial.perKeyConcurrencyMinimum, 4);
     assert.equal(initial.perKeyConcurrencyLimit, 10);
     assert.equal(initial.configuredPerKeyConcurrency, 10);
 
@@ -73,18 +74,19 @@ test('admin-only per-key setting is validated and survives a server restart', { 
     assert.equal((await save(3)).status, 401);
     assert.equal((await save(3, 'wrong-password')).status, 401);
     assert.equal((await save(0, 'test-admin-password')).status, 400);
+    assert.equal((await save(3, 'test-admin-password')).status, 400);
     assert.equal((await save(11, 'test-admin-password')).status, 400);
     fs.renameSync(passwordPath, `${passwordPath}.hidden`);
-    assert.equal((await save(3, 'test-admin-password')).status, 503);
+    assert.equal((await save(4, 'test-admin-password')).status, 503);
     fs.renameSync(`${passwordPath}.hidden`, passwordPath);
 
-    const updated = await save(3, 'test-admin-password');
+    const updated = await save(4, 'test-admin-password');
     assert.equal(updated.status, 200);
-    assert.equal((await updated.json()).configuredPerKeyConcurrency, 3);
+    assert.equal((await updated.json()).configuredPerKeyConcurrency, 4);
     await stopServer(server.child);
     server = await startServer(port, directory);
     const afterRestart = await (await fetch(`${server.baseUrl}/api/nova/queue-status`)).json();
-    assert.equal(afterRestart.configuredPerKeyConcurrency, 3);
+    assert.equal(afterRestart.configuredPerKeyConcurrency, 4);
   } finally {
     if (server) await stopServer(server.child);
     fs.rmSync(directory, { recursive: true, force: true });

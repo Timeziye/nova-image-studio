@@ -1,53 +1,46 @@
 const { createHash, timingSafeEqual } = require('node:crypto');
 
-function validateConcurrency(value, maximum) {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maximum) {
-    throw new RangeError(`并发数必须是 1 到 ${maximum} 的整数`);
+function validateConcurrency(value, minimum, maximum) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new RangeError(`并发数必须是 ${minimum} 到 ${maximum} 的整数`);
   }
   return value;
 }
 
-function normalizeConcurrency(value, maximum, fallback) {
+function normalizeConcurrency(value, minimum, maximum, fallback) {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : fallback;
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+function clampServerConcurrency(value, minimum, maximum, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
 }
 
 function taskSlots(parallelCount, availableSlots) {
   const count = Number.isInteger(parallelCount) && parallelCount > 0 ? parallelCount : 1;
-  return Math.min(count, availableSlots);
+  return count <= availableSlots ? count : 0;
 }
 
-function selectRunnableTask(queue, activeByKey, perKeyLimit, globalLimit, activeTotal) {
-  const globalAvailable = globalLimit - activeTotal;
-  if (globalAvailable <= 0) return null;
-  for (let index = 0; index < queue.length; index += 1) {
-    const task = queue[index];
-    const keyAvailable = perKeyLimit - (activeByKey.get(task.key) || 0);
-    if (keyAvailable <= 0) continue;
-    return {
-      index,
-      key: task.key,
-      slots: taskSlots(task.parallelCount, Math.min(keyAvailable, globalAvailable)),
-    };
-  }
-  return null;
-}
-
-async function runItemsWithConcurrency(count, concurrency, runItem) {
-  const results = new Array(count);
-  let nextIndex = 0;
-  const workerCount = Math.min(count, concurrency);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < count) {
-      const index = nextIndex++;
-      try {
-        results[index] = { status: 'fulfilled', value: await runItem(index) };
-      } catch (reason) {
-        results[index] = { status: 'rejected', reason };
-      }
+function selectRunnableTasks(queue, activeByKey, perKeyLimit, globalLimit, activeTotal) {
+  const selected = [];
+  const plannedByKey = new Map(activeByKey);
+  const blockedKeys = new Set();
+  let plannedTotal = activeTotal;
+  for (const task of queue) {
+    if (blockedKeys.has(task.key)) continue;
+    const keyAvailable = perKeyLimit - (plannedByKey.get(task.key) || 0);
+    const globalAvailable = globalLimit - plannedTotal;
+    const slots = taskSlots(task.parallelCount, Math.min(keyAvailable, globalAvailable));
+    if (slots > 0) {
+      selected.push({ id: task.id, key: task.key, slots });
+      plannedByKey.set(task.key, (plannedByKey.get(task.key) || 0) + slots);
+      plannedTotal += slots;
+    } else {
+      blockedKeys.add(task.key);
     }
-  }));
-  return results;
+  }
+  return selected;
 }
 
 function verifyAdminPassword(provided, expected) {
@@ -60,8 +53,8 @@ function verifyAdminPassword(provided, expected) {
 module.exports = {
   validateConcurrency,
   normalizeConcurrency,
+  clampServerConcurrency,
   taskSlots,
-  selectRunnableTask,
-  runItemsWithConcurrency,
+  selectRunnableTasks,
   verifyAdminPassword,
 };

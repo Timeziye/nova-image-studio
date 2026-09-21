@@ -161,4 +161,19 @@ describe('canvas folder image mentions', () => {
 
     expect(contexts.map(item => item.resultTitle)).toEqual(['APS的本质', '产能评估']);
   });
+
+  it('corresponding generation also names a single source image', () => {
+    const nodes = [
+      imageNode('image-1', 'APS的本质'),
+      configNode('config-1', 'Use @[all-images] as reference'),
+    ];
+    const oneConnection: CanvasConnection[] = [
+      { id: 'c1', fromNodeId: 'image-1', toNodeId: 'config-1' },
+    ];
+
+    const contexts = buildPairwiseGenerationContexts('config-1', nodes, oneConnection, nodes[1].metadata?.composerContent || '');
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].resultTitle).toBe('APS的本质');
+  });
 });

@@ -121,7 +121,7 @@ export function CanvasConfigNodePanel({
             onClick={onTogglePairwiseGeneration}
             disabled={busy || !pairwiseAvailable}
             className={cn("flex-1 gap-1", pairwiseActive && "border-primary text-primary")}
-            title={pairwiseAvailable ? "按上游图片顺序逐张套用同一套提示词" : "连接多张上游图片后可用"}
+            title={pairwiseAvailable ? "按上游图片顺序逐张套用同一套提示词" : "连接上游图片后可用"}
           >
             <Rows3 className="size-3" />
             <span className="text-[11px]">对应生成</span>
