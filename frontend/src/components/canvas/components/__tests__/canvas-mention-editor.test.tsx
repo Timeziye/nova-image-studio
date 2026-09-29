@@ -1,10 +1,76 @@
 import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CanvasMentionEditor } from "../canvas-mention-editor";
+import type { CanvasResourceReference } from "../../utils/canvas-resource-references";
 
 const LONG_CHINESE_PROMPT = "长".repeat(2048);
+
+const IMAGE_REFERENCE: CanvasResourceReference = {
+  id: "image-1", nodeId: "image-1", token: "node:image-1",
+  kind: "image", label: "图片1", title: "参考图片", active: true,
+};
+
+function ReferenceEditor({ initialValue }: { initialValue: string }) {
+  const [value, setValue] = useState(initialValue);
+  return <>
+    <CanvasMentionEditor value={value} references={[IMAGE_REFERENCE]} onChange={setValue} />
+    <output data-testid="reference-value">{value}</output>
+  </>;
+}
+
+describe("CanvasMentionEditor mentions at the caret", () => {
+  beforeEach(() => {
+    Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+      configurable: true, value: vi.fn(() => domRect(0, 20)),
+    });
+  });
+  afterEach(() => {
+    delete (Range.prototype as Range & { getBoundingClientRect?: () => DOMRect }).getBoundingClientRect;
+    window.getSelection()?.removeAllRanges();
+  });
+
+  it.each(["", "以", "参考，", "参考。", "参考（", "reference", "第一行\n第二行", "前文 "])(
+    "inserts a reference after %j without replacing surrounding text",
+    (prefix) => {
+      const suffix = "作为参考，保持构图";
+      render(<ReferenceEditor initialValue={prefix + suffix} />);
+      const editor = screen.getByRole("textbox");
+      // Model native insertion at a caret in the middle of a text node.
+      editor.textContent = prefix + "@图片" + suffix;
+      const range = document.createRange();
+      range.setStart(editor.firstChild!, prefix.length + "@图片".length);
+      range.collapse(true);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      fireEvent.input(editor);
+
+      expect(screen.getByRole("button", { name: /图片1\s*参考图片/ })).toBeVisible();
+      fireEvent.keyDown(editor, { key: "Enter" });
+      expect(screen.getByTestId("reference-value").textContent).toBe(prefix + "@[node:image-1]\u00a0" + suffix);
+      expect(editor.querySelectorAll("[data-mention-token]")).toHaveLength(1);
+      expect(window.getSelection()?.anchorNode?.textContent).toBe("\u00a0");
+      expect(window.getSelection()?.anchorOffset).toBe(1);
+    },
+  );
+
+  it("opens a second mention after an existing chip and Chinese text", () => {
+    render(<ReferenceEditor initialValue="@[node:image-1]以图1为参考，" />);
+    const editor = screen.getByRole("textbox");
+    const tail = editor.lastChild!;
+    tail.textContent += "@";
+    const range = document.createRange();
+    range.setStart(tail, tail.textContent!.length);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.input(editor);
+    fireEvent.mouseDown(screen.getByRole("button", { name: /图片1\s*参考图片/ }));
+    expect(screen.getByTestId("reference-value").textContent).toBe("@[node:image-1]以图1为参考，@[node:image-1]\u00a0");
+    expect(editor.querySelectorAll("[data-mention-token]")).toHaveLength(2);
+  });
+});
 
 function domRect(top: number, bottom: number): DOMRect {
   return {

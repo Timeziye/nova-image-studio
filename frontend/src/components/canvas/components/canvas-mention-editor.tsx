@@ -23,7 +23,8 @@ const CHIP_CLASS =
   "mx-0.5 inline-flex items-center gap-0.5 rounded-md bg-primary/15 px-1.5 py-0.5 align-baseline text-[11px] font-medium text-primary ring-1 ring-primary/25";
 const CHIP_REMOVE_CLASS = "grid size-3.5 place-items-center rounded-sm text-primary/70 transition-colors hover:bg-primary/25 hover:text-primary";
 const TOKEN_REGEX = /@\[([^\]]+)\]/g;
-const MENTION_TRIGGER = /(^|[\s\u00a0])@([^\s@\u00a0]*)$/;
+// A reference may start at any caret position, including directly after Chinese text.
+const MENTION_TRIGGER = /@([^\s@\u00a0]*)$/;
 
 function escapeHtml(value: string) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -239,7 +240,7 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
     const range = selection.getRangeAt(0).cloneRange();
     let rect = range.getBoundingClientRect();
     if (!rect || (rect.x === 0 && rect.y === 0 && rect.width === 0 && rect.height === 0)) rect = el.getBoundingClientRect();
-    setMention({ query: match[2], rect });
+    setMention({ query: match[1], rect });
     setActiveIndex(0);
   }, [activeReferences.length, closeMention]);
 
@@ -253,8 +254,8 @@ export function CanvasMentionEditor({ value, references, onChange, onSubmit, pla
       const { textNode, offset } = context;
       const match = MENTION_TRIGGER.exec(textNode.data.slice(0, offset));
       if (!match) return;
-      const atIndex = offset - match[2].length - 1;
-      textNode.deleteData(atIndex, match[2].length + 1);
+      const atIndex = match.index;
+      textNode.deleteData(atIndex, match[0].length);
       const tail = textNode.splitText(atIndex);
       const chip = createChip(reference.token, reference.label);
       const spacer = document.createTextNode(" ");
