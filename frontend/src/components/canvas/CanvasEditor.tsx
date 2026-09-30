@@ -1469,8 +1469,10 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
         }
         patchNode(node.id, (n) => ({ ...n, metadata: { ...n.metadata, status: result.status as CanvasNodeMetadata["status"] } }));
         showToast("已获取当前进度", "info");
-      } catch {
-        showToast("获取进度失败", "error");
+      } catch (error) {
+        const details = error instanceof Error ? error.message : String(error);
+        patchNode(node.id, (n) => ({ ...n, metadata: { ...n.metadata, status: "error", errorDetails: details } }));
+        showToast(details, "error");
       }
     },
     [patchNode, showToast],
@@ -1480,7 +1482,7 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
   useEffect(() => {
     const activeNodes = nodes.filter((node) => {
       const s = node.metadata?.status;
-      return node.metadata?.generationTaskId && (s === "submitting" || s === "queued" || s === "processing");
+      return node.metadata?.generationTaskId && (s === "submitting" || s === "queued" || s === "processing" || (s === "completed" && !node.metadata?.storageKey));
     });
     if (!activeNodes.length) return;
 
@@ -1508,21 +1510,20 @@ export function CanvasEditor({ projectId, onBack, onRequireApiKey, onQueueStatsC
 
           // 仍在进行中 → 继续轮询
           patchNode(node.id, (n) => ({ ...n, metadata: { ...n.metadata, status: result.status as CanvasNodeMetadata["status"] } }));
-          await pollNodeTask(taskId, (taskStatus) => {
+          const images = await pollNodeTask(taskId, (taskStatus) => {
             if (controller.signal.aborted) return;
             patchNode(node.id, (n) => ({ ...n, metadata: { ...n.metadata, status: taskStatus as CanvasNodeMetadata["status"] } }));
           }, controller.signal);
 
           if (controller.signal.aborted) return;
-          const finalResult = await checkExistingTask(taskId);
-          if (finalResult.images?.length) {
-            const image = finalResult.images[0];
+          if (images.length) {
+            const image = images[0];
             const size = fitNodeSize(image.width, image.height, 360, 360);
             patchNode(node.id, (n) => ({ ...n, width: size.width, height: size.height, metadata: { ...n.metadata, ...storedToMetadata(image, { prompt: n.metadata?.prompt }), generationTaskId: n.metadata?.generationTaskId, generationStartedAt: n.metadata?.generationStartedAt } }));
           }
-        } catch {
+        } catch (error) {
           if (controller.signal.aborted) return;
-          patchNode(node.id, (n) => ({ ...n, metadata: { ...n.metadata, status: "error", errorDetails: "恢复生成状态失败" } }));
+          patchNode(node.id, (n) => ({ ...n, metadata: { ...n.metadata, status: "error", errorDetails: error instanceof Error ? error.message : "恢复生成状态失败" } }));
         } finally {
           activeGenerationsRef.current.delete(node.id);
         }

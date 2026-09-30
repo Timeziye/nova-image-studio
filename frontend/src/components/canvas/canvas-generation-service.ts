@@ -90,17 +90,14 @@ export async function pollNodeTask(
   const deadline = Date.now() + MAX_WAIT_MS;
   for (;;) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const task = await getNovaTask(taskId);
+    const task = await readTaskWithRetry(taskId, signal);
     onStatus(task.status);
     if (task.status === "completed" || task.status === "failed" || task.status === "expired") {
       const images = task.result?.images || [];
       if (task.status !== "completed" || images.length === 0) {
         throw new Error(task.error || (task.status === "expired" ? "该任务已超出取回时间" : "生成失败"));
       }
-      const stored = (await Promise.all(images.map(storeResultImage))).filter((item): item is CanvasGeneratedImage => Boolean(item));
-      void ackNovaTask(taskId);
-      if (stored.length === 0) throw new Error("生成结果保存失败");
-      return stored;
+      return retrieveResultImages(taskId, images, signal);
     }
     if (Date.now() > deadline) throw new Error("生成超时，请稍后重试");
     await delay(POLL_INTERVAL, signal);
@@ -109,10 +106,10 @@ export async function pollNodeTask(
 
 /** 检查已有任务的当前状态（用于刷新页面后恢复进行中的任务）。 */
 export async function checkExistingTask(taskId: string): Promise<{ status: NovaTaskResponse["status"]; images?: CanvasGeneratedImage[]; error?: string }> {
-  const task = await getNovaTask(taskId);
-  if (task.status === "completed" && task.result?.images?.length) {
-    const stored = (await Promise.all(task.result.images.map(storeResultImage))).filter((item): item is CanvasGeneratedImage => Boolean(item));
-    void ackNovaTask(taskId);
+  const task = await readTaskWithRetry(taskId);
+  if (task.status === "completed") {
+    if (!task.result?.images?.length) throw new Error("任务没有可取回的图片，结果可能已过期");
+    const stored = await retrieveResultImages(taskId, task.result.images);
     return { status: "completed", images: stored };
   }
   if (task.status === "failed" || task.status === "expired") {
@@ -160,14 +157,36 @@ export async function generateCanvasImages(args: {
 }
 
 /** 结果可能是 data URL 或 `URL:/api/nova/images/...`；统一下载为 blob 存入本地 IndexedDB。 */
-async function storeResultImage(image: string): Promise<CanvasGeneratedImage | null> {
+async function retrieveResultImages(taskId: string, images: string[], signal?: AbortSignal): Promise<CanvasGeneratedImage[]> {
+  const stored = await Promise.all(images.map(image => storeResultImage(image, signal)));
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  // ACK shortens server retention. Only acknowledge after every local write succeeds.
+  // A failed ACK must not turn successfully saved images into a generation failure.
+  await ackNovaTask(taskId).catch(() => undefined);
+  return stored;
+}
+
+async function readTaskWithRetry(taskId: string, signal?: AbortSignal): Promise<NovaTaskResponse> {
+  for (let attempt = 0; ; attempt++) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    try {
+      return await getNovaTask(taskId);
+    } catch (error) {
+      if (!(error instanceof TypeError) || attempt >= 2) throw error;
+      await delay(1000, signal);
+    }
+  }
+}
+
+async function storeResultImage(image: string, signal?: AbortSignal): Promise<CanvasGeneratedImage> {
   const realUrl = image.startsWith("URL:") ? image.slice(4) : image;
-  if (!realUrl) return null;
+  if (!realUrl) throw new Error("生成结果地址为空，请重新取回结果");
   try {
-    const stored = await uploadImage(realUrl);
+    const stored = await uploadImage(realUrl, { signal, timeoutMs: 90_000, attempts: 2 });
     return { storageKey: stored.storageKey, url: stored.url, width: stored.width, height: stored.height, mimeType: stored.mimeType, bytes: stored.bytes };
-  } catch {
-    return null;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new Error(`生成结果取回或保存失败：${error instanceof Error ? error.message : String(error)}。可重新取回结果，无需重新生成。`);
   }
 }
 

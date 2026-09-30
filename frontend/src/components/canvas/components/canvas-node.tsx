@@ -306,6 +306,7 @@ function ImageNodeBody({
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-3 text-center" data-canvas-no-zoom onPointerDown={(event) => event.stopPropagation()}>
           <AlertCircle className="size-6 text-destructive" />
           <span className="line-clamp-3 text-xs text-destructive">{data.metadata?.errorDetails || "生成失败"}</span>
+          {data.metadata?.generationTaskId && onRefreshProgress && <RetrieveResultButton onRetrieve={() => onRefreshProgress(data)} />}
           {onRetry && (
             <RetryButton onRetry={() => onRetry(data)} />
           )}
@@ -446,6 +447,15 @@ function GenerationStatusOverlay({ data, status, onRefreshProgress }: { data: Ca
 }
 
 /** 重试按钮（带 3s 冷却防连点）。 */
+function RetrieveResultButton({ onRetrieve }: { onRetrieve: () => void | Promise<void> }) {
+  const [retrieving, setRetrieving] = useState(false);
+  return <button type="button" disabled={retrieving} className="inline-flex items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1.5 text-[11px] text-primary disabled:opacity-50" onClick={async () => {
+    if (retrieving) return;
+    setRetrieving(true);
+    try { await onRetrieve(); } finally { setRetrieving(false); }
+  }}><RefreshCw className={cn("size-3.5", retrieving && "animate-spin")} />{retrieving ? "正在取回…" : "重新取回结果"}</button>;
+}
+
 function RetryButton({ onRetry }: { onRetry: () => void }) {
   const [cooldown, setCooldown] = useState(0);
 
