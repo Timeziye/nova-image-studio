@@ -1,5 +1,6 @@
 import type { AspectRatio, OutputSize } from '@/lib/gemini-config';
 import type { GptImageBackground, GptImageQuality, GptImageStyle } from '@/lib/model-capabilities';
+import { prepareTaskRequest } from '@/lib/task-request-budget';
 import {
   getCompleteImageModels,
   getCompleteTextModels,
@@ -28,7 +29,7 @@ export interface ModelStatus {
 
 const MODEL_CHECK_TIMEOUT = 30000;
 const TASK_REQUEST_TIMEOUT = 30000;
-const CREATE_TASK_TIMEOUT = 60000;
+const CREATE_TASK_TIMEOUT = 120000;
 
 export type NovaTaskMode = 'text-to-image' | 'image-to-image';
 export type NovaTaskStatus = 'queued' | '排队中' | 'processing' | 'completed' | 'failed' | 'expired';
@@ -198,10 +199,11 @@ async function fetchWithTimeout(
 }
 
 export async function createNovaTask(input: CreateNovaTaskInput, signal?: AbortSignal): Promise<string> {
+  const body = await prepareTaskRequest(input, { signal });
   const response = await fetchWithTimeout('/api/nova/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body,
     signal,
   }, CREATE_TASK_TIMEOUT);
   const data = await parseTaskResponse<CreateTaskResponse>(response);
